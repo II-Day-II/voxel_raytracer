@@ -1,5 +1,8 @@
-use image::GenericImageView;
+use image::{GenericImageView, EncodableLayout};
 use anyhow::*;
+use wgpu::util::DeviceExt;
+
+use crate::resources;
 
 pub struct Texture {
     pub texture: wgpu::Texture,
@@ -7,16 +10,6 @@ pub struct Texture {
     pub sampler: wgpu::Sampler,
 }
 impl Texture {
-    pub fn from_bytes(
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        bytes: &[u8],
-        label: &str,
-        is_normal_map: bool,
-    ) -> Result<Self> {
-        let img = image::load_from_memory(bytes)?;
-        Self::from_image(device, queue, &img, Some(label), is_normal_map)
-    }
 
     pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float; // 1.
     
@@ -57,7 +50,7 @@ impl Texture {
 
         Self { texture, view, sampler }
     }
-
+    #[allow(dead_code)]
     pub fn from_image(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -121,5 +114,100 @@ impl Texture {
         );
         
         Ok(Self { texture, view, sampler })
+    }
+    pub fn create_screen_texture(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration, srgb_format: wgpu::TextureFormat) -> Self {
+        let texture = device.create_texture(
+            &wgpu::TextureDescriptor {
+                label: Some("Screen texture"),
+                size: wgpu::Extent3d {
+                    width: config.width,
+                    height: config.height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: srgb_format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING, // SEE WHAT'S NEEDED HERE
+                view_formats: &[]
+            }
+        );
+        let view = texture.create_view(
+            &wgpu::TextureViewDescriptor::default(),
+        );
+        let sampler = device.create_sampler(
+            &wgpu::SamplerDescriptor { 
+                label: Some("Screen sampler"),
+                address_mode_u: wgpu::AddressMode::ClampToEdge,
+                address_mode_v: wgpu::AddressMode::ClampToEdge,
+                address_mode_w: wgpu::AddressMode::ClampToEdge,
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Nearest,
+                mipmap_filter: wgpu::FilterMode::Nearest,
+                ..Default::default()
+            },
+        );
+        Self {texture, view, sampler}
+    }
+    pub async fn create_cubemap(device: &wgpu::Device, queue: &wgpu::Queue, box_path: &str) -> Self {
+         // TODO: actually fix the skybox. Don't load it for now, since it takes several seconds
+        let names = ["right", "left", "top", "bottom", "front", "back"];
+        let mut faces = Vec::with_capacity(6); 
+        for name in names {
+            let path = format!("{}/{}.jpg", box_path, name);
+            faces.push(
+                image::load_from_memory(
+                    &resources::load_binary(
+                        &path
+                    )
+                    .await
+                    .expect(&format!("Could not open resource: '{}'", path))
+                ).expect("Could not load texture")
+                .to_rgba8()
+            );
+        };
+        let data = faces.iter().map(|img| img.as_bytes()).collect::<Vec<_>>().concat();
+    
+        let dimensions = faces[0].dimensions();
+        let size = wgpu::Extent3d {
+            width: dimensions.0,
+            height: dimensions.1,
+            depth_or_array_layers: 6, // 6 sides of a cube
+        };
+        let max_mips = 1; //wgpu::Extent3d {depth_or_array_layers: 1, ..size}.max_mips(wgpu::TextureDimension::D2); // can't do this because we' don't have mimpapped textures..?
+        let texture = device.create_texture_with_data(
+            queue,
+            &wgpu::TextureDescriptor {
+                label: Some("Cubemap"),
+                size,
+                mip_level_count: max_mips,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8UnormSrgb, // maybe???
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            },
+            &data,
+        );
+        let view = texture.create_view(
+            &wgpu::TextureViewDescriptor {
+                label: Some("Cube view"),
+                dimension: Some(wgpu::TextureViewDimension::Cube), 
+                ..wgpu::TextureViewDescriptor::default()}
+        );
+        let sampler = device.create_sampler(
+            &wgpu::SamplerDescriptor { 
+                label: Some("Cube sampler"),
+                address_mode_u: wgpu::AddressMode::ClampToEdge,
+                address_mode_v: wgpu::AddressMode::ClampToEdge,
+                address_mode_w: wgpu::AddressMode::ClampToEdge,
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
+                mipmap_filter: wgpu::FilterMode::Nearest,
+                ..Default::default()
+            },
+        );
+
+        Self {texture, view, sampler}
     }
 }

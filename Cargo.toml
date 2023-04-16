@@ -22,9 +22,8 @@ log = "0.4"
 wgpu = "0.15"
 pollster = "0.3"
 bytemuck = {version = "1.13.1", features = ["derive"]}
-cgmath = "0.18"
+glam = {version = "0.23", features = ["bytemuck"]}
 anyhow = "1.0"
-tobj = { version = "3.2", features = ["async"]}
 instant = "0.1"
 
 [dependencies.image]

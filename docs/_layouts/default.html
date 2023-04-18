@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html>
+	<body style="background-color:#111111">
+	<head>
+		<meta http-equiv="Content-Type" content="text/html" charset="UTF-8" />
+    	<meta http-equiv="X-UA-Compatible" content="IE=edge,chrome=1" />
+		<title>{% if page.title %} {{ page.title }} {% endif %}</title>
+		<meta name="description" content="{{site.description}}">
+		<link rel="stylesheet" href="/assets/css/style.css">
+		<link href='https://fonts.googleapis.com/css?family=Roboto:400,300,300italic,400italic,700,700italic,900,900italic' rel='stylesheet' type='text/css'>
+
+		<link rel="shortcut icon" href="/assets/ico/favicon.png">
+
+	</head>
+	<body class="{{page.page-template}}">
+		<!-- Header
+		    ================================================== -->
+		<header id="site-head">
+	        <div class="vertical">
+	            <div id="site-head-content">
+	                <div class="blog-title-wrap">
+	                    <div class="inner">   
+	                        <h1 class="blog-title"><a class="nav" href="{{site.url}}">{{site.name}}</a></h1>
+	                        <h1 class="blog-nav">
+								<a class="nav" href="{{site.url}}/blog/index.html">Blog</a>&nbsp;&nbsp;
+								<a class="nav" href="{{site.url}}/about.html">About</a></h1>
+	                    </div>
+	                </div>
+	            </div>
+	        </div>
+		</header>
+		<div class="navbar-padding"></div>
+
+		{{ content }}
+
+		<!-- Footer
+		    ================================================== -->
+		<div class="navbar-padding"></div>
+		<footer class="site-footer inner">
+	        <div class="inner">
+	             <section class="copyright">Copyright 2023<a href="{{site.authorurl}}">{{site.author}}</a>. Hosted by <a href="{{url}}">GitHub</a>.</section>
+	        </div>
+		</footer>
+
+		<!-- Javascripts 
+		    ================================================= -->
+
+	    <!-- Analytics
+	    ================================================== -->
+	    <script>
+			// analytics code
+	    </script>	
+	</body>
+</html>

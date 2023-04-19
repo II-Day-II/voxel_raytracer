@@ -1,3 +1,2 @@
-# Voxel Raytracing
 
-This blog is under construction
+This blog is under construction!

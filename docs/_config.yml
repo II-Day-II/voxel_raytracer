@@ -1,3 +1,4 @@
 name: "Voxel Raytracing"
 author: "David Kaméus"
 theme: "minima"
+baseurl: "/voxel_raytracer"

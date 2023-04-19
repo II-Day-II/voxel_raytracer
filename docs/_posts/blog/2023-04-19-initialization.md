@@ -1,6 +1,6 @@
 ---
 layout: post
-title: Project outline
+title: Initialization
 tags: [DH2323 Project, GPU Voxel Raytracing]
 author: David Kaméus 
 ---

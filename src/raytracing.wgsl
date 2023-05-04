@@ -31,6 +31,30 @@ fn ray_at(ray: Ray, t: f32) -> vec3<f32> {
     return ray.position + ray.direction * t;
 }
 
+struct DDA {
+    ray: Ray,
+    pos: vec3<i32>, // the position in the chunk
+    delta_dist: vec3<f32>, // distance ray has to travel to reach next cell in each direction
+    step_dir: vec3<i32>, // direction the ray will step
+    side_dist: vec3<f32>, // total distance ray has to travel to reach one additional step in each direction
+}
+fn init_DDA(ray: Ray) -> DDA {
+    var dda_initial: DDA;
+    dda_initial.ray = ray;
+    dda_initial.pos = vec3<i32>(floor(ray.position));
+    dda_initial.delta_dist = abs(ray.inv_direction);
+    dda_initial.step_dir = vec3<i32>(sign(ray.direction));
+    dda_initial.side_dist = (sign(ray.direction) * (vec3<f32>(dda_initial.pos) - ray.position) + (sign(ray.direction) * 0.5) + 0.5) * dda_initial.delta_dist;
+    return dda_initial;
+}
+fn step_DDA(state: ptr<private, DDA>) -> vec3<f32> {
+    // branchless DDA from that one article
+    let mask: vec3<bool> = (*state).side_dist.xyz <= min((*state).side_dist.yzx, (*state).side_dist.zxy);
+    (*state).side_dist += vec3<f32>(mask) * (*state).delta_dist;
+    (*state).pos += vec3<i32>(mask) * (*state).step_dir;
+    let normal = vec3<f32>(mask) * -vec3<f32>((*state).step_dir); 
+}
+
 var<private> EPSILON: f32 = 0.0001;
 
 fn mandelbrot(pos: vec2<f32>) -> vec3<f32> {

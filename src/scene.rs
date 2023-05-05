@@ -9,6 +9,8 @@ const NUM_MATERIALS: usize = 256;
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct TempScene {
     pub voxels: [u32;4*4*4],
+    pub size: [f32;3],
+    pub padding: u32,
 }
 impl TempScene {
     pub fn into_buffer(&self) -> &[u8] {

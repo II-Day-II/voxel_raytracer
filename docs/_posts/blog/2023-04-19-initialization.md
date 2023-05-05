@@ -44,6 +44,6 @@ that and got it implemented. Then I added a box to the shader that I intend to u
 ![Red, green and blue box in the skybox]({{ site.baseurl }}/img/box.jpg)
 
 As stated before, this was initially all upside down, and the camera controls were inverted and very difficult to maneuver.
-After some debugging of UV coordinates, I figured out that (U+,V+) corresponding to (right, down), whcih I was using in the screen shader, didn't match with whatever positions the compute shader was drawing to, so I ended up changing them to what they would be in OpenGL, where (U+,V+) corresponds to (right, up). And with that, I got the scenery above!
+After some debugging of UV coordinates, I figured out that (U+,V+) corresponding to (right, down), which I was using in the screen shader, didn't match with whatever positions the compute shader was drawing to, so I ended up changing them to what they would be in OpenGL, where (U+,V+) corresponds to (right, up). And with that, I got the scenery above!
 
 In the next post, I will start actually tracing rays through scenes.

@@ -175,26 +175,30 @@ impl State {
         // WORLD -----------------
         let scene = scene::TempScene { // TEMP - just make sure we get _something_
             voxels: [
-                0,0,0,0,
-                0,1,1,0,
-                0,0,0,0,
-                0,0,0,0,
-
-                0,1,1,0,
-                1,0,0,1,
-                1,0,0,1,
-                0,1,1,0,
-                
-                1,0,0,1,
-                0,0,0,0,
-                0,0,0,0,
-                1,0,0,1,
-
-                1,1,1,1,
-                0,1,1,1,
-                0,0,1,1,
-                0,0,0,1,
-            ]
+                // x 0 => 4 
+                // z = 0
+                0,0,0,0, // y = 0
+                0,1,1,0, // y = 1
+                0,0,0,0, // y = 2
+                0,0,0,0, // y = 3
+                // z = 1
+                0,1,1,0, // y = 0
+                1,0,0,1, // y = 1
+                1,0,0,1, // y = 2
+                0,1,1,0, // y = 3
+                // z = 2
+                1,0,0,1, // y = 0
+                0,0,0,0, // y = 1
+                0,0,0,0, // y = 2
+                1,0,0,1, // y = 3
+                // z = 3
+                1,1,1,1, // y = 0
+                0,1,1,1, // y = 1
+                0,0,1,1, // y = 2
+                0,0,0,1, // y = 3
+            ],
+            size: [4.0,4.0,4.0,],
+            padding: 0,
         };
         let scene_buffer = device.create_buffer_init(
             &wgpu::util::BufferInitDescriptor {
@@ -386,7 +390,7 @@ impl State {
     fn update(&mut self, dt: instant::Duration) {
         self.camera.update(dt);
         self.queue.write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&self.camera.uniform()));
-        self.window.set_title(&format!("Voxel Raytracing -- Frame time: {:.2}ms", dt.as_secs_f32()*1000.0));
+        self.window.set_title(&format!("Voxel Raytracing -- Frame time: {:05.2}ms", dt.as_secs_f32()*1000.0));
     }
 
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {

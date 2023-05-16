@@ -15,13 +15,50 @@ struct Camera {
 @group(1) @binding(0)
 var<uniform> camera: Camera;
 
+fn decompress_uvec4(in: u32) -> vec4<u32> {
+    let x = in >> 24u;
+    let y = in >> 16u;
+    let z = in >> 8u;
+    let w = in >> 0u;
+    return vec4(x, y, z, w);
+}
 
 struct Voxel {
+    material: u32,
+    normal: vec3<f32>,
     albedo: vec3<f32>,
 }
+struct CompressedVoxel {
+    albedo: u32, // r(8), g(8), b(8), unused(8)
+    normal: u32, // material index(8), x(8), y(8), z(8)
+}
+fn decompress_voxel(in: CompressedVoxel) -> Voxel {
+    var out: Voxel;
+    let nr = decompress_uvec4(in.normal);
+    let normal = vec3<f32>(nr.yzw * 2u - 255u) * 1.0/255.0;
+    let material = nr.x;
+    let ar = decompress_uvec4(in.albedo);
+    let albedo = vec3<f32>(ar.xyz) * 1.0/255.0;
+    out.normal = normal;
+    out.albedo = albedo;
+    out.material = material;
+    return out;
+}
+struct Chunk {
+    pos: vec4<f32>, // the chunk's position in the scene (x, y, z) and if chunk contains data (w = 0.0 if chunk is empty)
+    voxels: array<CompressedVoxel, 512>,// don't want to hardcode the size like this ;_;
+}
+struct Material {
+    emissive: u32,
+    opacity: f32,
+    refraction_index: f32,
+    specular: f32,
+    shininess: f32,
+}
 struct Scene {
-    chunk_map: array<u32, 64>, // change this!!!
-    size: vec3<f32>,
+    size: vec4<f32>,
+    chunk_map: array<Chunk, 512>, // change this!!!
+    materials: array<Material, 4>, // how make dynamically sized?
 }
 @group(2) @binding(0)
 var<storage, read> scene: Scene;
@@ -33,7 +70,7 @@ fn in_scene_bounds(pos: vec3<i32>) -> bool {
 }
 // the index into the scene array that corresponds to a 3d position
 fn get_scene_index(pos: vec3<i32>) -> i32 {
-    let isize = vec3<i32>(scene.size);
+    let isize = vec3<i32>(scene.size.xyz);
     return pos.x + isize.x * (pos.y + isize.y * pos.z);
 }
 
@@ -88,10 +125,11 @@ fn step_scene(ray: Ray, max_depth: f32, ignore_first: bool) -> StepResult {
     result.hit = false;
     var last_side_dist = vec3(0.0);
     var dda: DDA = init_DDA(ray);
-    var normal = box_normal(ray.position, vec3(0.0), scene.size);
+    var normal = box_normal(ray.position, vec3(0.0), scene.size.xyz);
     while in_scene_bounds(dda.pos) {
         let index = get_scene_index(dda.pos);
-        if scene.chunk_map[index] != u32(0) { // TODO: move to chunked solution
+        let chunk = scene.chunk_map[index];
+        if chunk.pos.w != 0.0 { 
             result.hit = true;
             result.new_ray.position = vec3<f32>(dda.pos);
             result.normal = normal;
@@ -104,7 +142,7 @@ fn step_scene(ray: Ray, max_depth: f32, ignore_first: bool) -> StepResult {
     return result;
 }
 
-var<private> EPSILON: f32 = 0.0001;
+var<private> EPSILON: f32 = 0.0001; // I have to do this instead of constants at the moment, since Naga doesn't have constants yet.
 
 fn mandelbrot(pos: vec2<f32>) -> vec3<f32> {
     let MAX_ITERS: i32 = 100;
@@ -164,7 +202,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
     var max_depth = -1.0; // maybe not needed?
 
-    let scene_intersection = intersect_box(ray, vec3(0.0), scene.size);
+    let scene_intersection = intersect_box(ray, vec3(0.0), scene.size.xyz);
     if scene_intersection.x > scene_intersection.y || scene_intersection.y < 0.0 { // missed map if near > far or far < 0
         out_color = skybox_color(ray.direction); 
     } else {
@@ -173,7 +211,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         if scene_intersection.x > 0.0 { // move the ray to the edge of the map so it can DDA inside it
             ray.position += ray.direction * (scene_intersection.x + EPSILON);
         }
-        var final_normal = box_normal(ray.position, vec3(0.0), scene.size);
+        var final_normal = box_normal(ray.position, vec3(0.0), scene.size.xyz);
         
         let final_info = step_scene(ray, max_depth, false);
         if final_info.hit {

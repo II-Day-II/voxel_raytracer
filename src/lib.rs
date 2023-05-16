@@ -1,3 +1,4 @@
+use glam::uvec3;
 #[cfg(target_arch="wasm32")]
 use wasm_bindgen::prelude::*;
 use wgpu::{util::DeviceExt, include_wgsl};
@@ -173,37 +174,12 @@ impl State {
         
 
         // WORLD -----------------
-        let scene = scene::TempScene { // TEMP - just make sure we get _something_
-            voxels: [
-                // x 0 => 4 
-                // z = 0
-                0,0,0,0, // y = 0
-                0,1,1,0, // y = 1
-                0,0,0,0, // y = 2
-                0,0,0,0, // y = 3
-                // z = 1
-                0,1,1,0, // y = 0
-                1,0,0,1, // y = 1
-                1,0,0,1, // y = 2
-                0,1,1,0, // y = 3
-                // z = 2
-                1,0,0,1, // y = 0
-                0,0,0,0, // y = 1
-                0,0,0,0, // y = 2
-                1,0,0,1, // y = 3
-                // z = 3
-                1,1,1,1, // y = 0
-                0,1,1,1, // y = 1
-                0,0,1,1, // y = 2
-                0,0,0,1, // y = 3
-            ],
-            size: [4.0,4.0,4.0,],
-            padding: 0,
-        };
+        let mut scene = scene::Scene::new();
+        scene.chunk_at(uvec3(0,0,0)).fill_borders(0, uvec3(1, 1, 1));
         let scene_buffer = device.create_buffer_init(
             &wgpu::util::BufferInitDescriptor {
                 label: Some("scene buffer"),
-                contents: scene.into_buffer(),
+                contents: &scene.into_buffer(),
                 usage: wgpu::BufferUsages::STORAGE, // should this maybe be uniform??
             }
         );

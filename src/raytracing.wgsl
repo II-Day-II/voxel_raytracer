@@ -16,10 +16,10 @@ struct Camera {
 var<uniform> camera: Camera;
 
 fn decompress_uvec4(in: u32) -> vec4<u32> {
-    let x = in >> 24u;
-    let y = in >> 16u;
-    let z = in >> 8u;
-    let w = in >> 0u;
+    let x = (in >> 24u) & 0xFFu;
+    let y = (in >> 16u) & 0xFFu;
+    let z = (in >> 8u ) & 0xFFu;
+    let w = (in >> 0u ) & 0xFFu;
     return vec4(x, y, z, w);
 }
 
@@ -29,16 +29,16 @@ struct Voxel {
     albedo: vec3<f32>,
 }
 struct CompressedVoxel {
-    albedo: u32, // r(8), g(8), b(8), unused(8)
     normal: u32, // material index(8), x(8), y(8), z(8)
+    albedo: u32, // r(8), g(8), b(8), unused(8)
 }
 fn decompress_voxel(in: CompressedVoxel) -> Voxel {
     var out: Voxel;
     let nr = decompress_uvec4(in.normal);
-    let normal = vec3<f32>(nr.yzw * 2u - 255u) * 1.0/255.0;
+    let normal = vec3<f32>(vec3<i32>(nr.yzw * 2u) - 255) / 255.0;
     let material = nr.x;
     let ar = decompress_uvec4(in.albedo);
-    let albedo = vec3<f32>(ar.xyz) * 1.0/255.0;
+    let albedo = vec3<f32>(ar.xyz) / 255.0;
     out.normal = normal;
     out.albedo = albedo;
     out.material = material;
@@ -68,10 +68,23 @@ fn in_scene_bounds(pos: vec3<i32>) -> bool {
     let fpos = vec3<f32>(pos);
     return fpos.x < scene.size.x && fpos.y < scene.size.y && fpos.z < scene.size.z && fpos.x >= 0.0 && fpos.y >= 0.0 && fpos.z >= 0.0;
 }
+
+fn in_chunk_bounds(pos: vec3<i32>) -> bool {
+    return pos.x < CHUNK_SIZE && pos.y < CHUNK_SIZE && pos.z < CHUNK_SIZE && pos.x >= 0 && pos.y >= 0 && pos.z >= 0;
+}
+fn compressed_voxel_at(chunk_idx: i32, chunk_pos: vec3<i32>) -> CompressedVoxel {
+    let chunk = &scene.chunk_map[chunk_idx];
+    let idx = get_chunk_index(chunk_pos);
+    return (*chunk).voxels[idx]; 
+}
+
 // the index into the scene array that corresponds to a 3d position
 fn get_scene_index(pos: vec3<i32>) -> i32 {
     let isize = vec3<i32>(scene.size.xyz);
     return pos.x + isize.x * (pos.y + isize.y * pos.z);
+}
+fn get_chunk_index(pos: vec3<i32>) -> i32 {
+    return pos.x + CHUNK_SIZE * (pos.y + CHUNK_SIZE * pos.z);
 }
 
 struct Ray {
@@ -114,10 +127,11 @@ fn step_DDA(state: ptr<function, DDA>) -> vec3<f32> {
 struct StepResult {
     hit: bool, // if this is false, the rest of the data is invalid
     new_ray: Ray, // updated information about a ray after stepping 
-    normal: vec3<f32>,
+    normal: vec3<f32>, // the face normal of the hit voxel
     voxel: Voxel,
     color_add: vec3<f32>,
     color_mul: vec3<f32>,
+    // TODO: refraction
 }
 
 fn step_scene(ray: Ray, max_depth: f32, ignore_first: bool) -> StepResult {
@@ -129,11 +143,17 @@ fn step_scene(ray: Ray, max_depth: f32, ignore_first: bool) -> StepResult {
     while in_scene_bounds(dda.pos) {
         let index = get_scene_index(dda.pos);
         let chunk = scene.chunk_map[index];
-        if chunk.pos.w != 0.0 { 
-            result.hit = true;
-            result.new_ray.position = vec3<f32>(dda.pos);
-            result.normal = normal;
-            return result;
+        if chunk.pos.w != 0.0 {  // the chunk has non-empty voxels
+            var chunk_ray: Ray; // ray to use for traversing in the chunk
+            chunk_ray.direction = dda.ray.direction;
+            chunk_ray.inv_direction = dda.ray.inv_direction;
+            let updated_ray_pos = dda.ray.position + dda.ray.direction * (min(min(last_side_dist.x, last_side_dist.y), last_side_dist.z) - EPSILON); // move to the chunk bounds
+            chunk_ray.position = clamp((updated_ray_pos - vec3<f32>(dda.pos)) * vec3(f32(CHUNK_SIZE)), vec3(EPSILON), vec3(f32(CHUNK_SIZE)) - EPSILON); // set position relative to chunk bounds
+            let chunk_info = step_chunk(chunk_ray, chunk.pos.xyz, index);
+            if chunk_info.hit {
+                result = chunk_info;
+                return result;
+            }
         }
         last_side_dist = dda.side_dist;
         normal = step_DDA(&dda);
@@ -142,11 +162,40 @@ fn step_scene(ray: Ray, max_depth: f32, ignore_first: bool) -> StepResult {
     return result;
 }
 
+fn step_chunk(chunk_ray: Ray, chunk_pos: vec3<f32>, chunk_index: i32) -> StepResult {
+    var result: StepResult;
+    result.hit = false;
+    var last_side_dist = vec3(0.0);
+    var dda: DDA = init_DDA(chunk_ray);
+    var normal = box_normal(chunk_ray.position, vec3(0.0), vec3(f32(CHUNK_SIZE)));
+    while in_chunk_bounds(dda.pos) {
+        let compressed = compressed_voxel_at(chunk_index, dda.pos);
+        let vox = decompress_voxel(compressed); 
+        if vox.material < 4u { // TODO: change this hardcoded value
+            let material = scene.materials[vox.material];
+            if material.opacity >= 1.0 {
+                result.hit = true;
+                result.new_ray.position = vec3<f32>(dda.pos) + dda.ray.direction * (min(min(last_side_dist.x, last_side_dist.y), last_side_dist.z) - EPSILON);
+                result.normal = normal;
+                result.voxel = vox;
+                return result;
+            }
+        }
+        last_side_dist = dda.side_dist;
+        normal = step_DDA(&dda);
+        return result;
+    }
+    return result;
+}
+
 var<private> EPSILON: f32 = 0.0001; // I have to do this instead of constants at the moment, since Naga doesn't have constants yet.
+//var<private> CHUNK_SIZE: vec3<i32> = vec3(8); // THIS CONST EXPR ISN'T IMPLEMENTED
+var<private> CHUNK_SIZE: i32 = 8;
+
 
 fn mandelbrot(pos: vec2<f32>) -> vec3<f32> {
     let MAX_ITERS: i32 = 100;
-    var z: vec2<f32> = vec2(0.0, 0.0);
+    var z: vec2<f32> = vec2(0.0);
     let c = pos.xy * 2.0;
     let epsilon = 1000.0;
     for (var i: i32 = 0; i < MAX_ITERS; i++) {
@@ -155,7 +204,7 @@ fn mandelbrot(pos: vec2<f32>) -> vec3<f32> {
         }
         z = vec2(z.x * z.x - z.y * z.y, 2.0 * z.x * z.y) + c;
     }
-    return vec3(0.0, 0.0, 0.0);
+    return vec3(0.0);
 }
 
 fn intersect_box(ray: Ray, box_min: vec3<f32>, box_max: vec3<f32>) -> vec2<f32> {
@@ -180,6 +229,15 @@ fn box_normal(intersect_pos: vec3<f32>, box_min: vec3<f32>, box_max: vec3<f32>) 
 
 fn skybox_color(direction: vec3<f32>) -> vec3<f32> {
     return textureSampleLevel(skybox_t, skybox_s, direction, 0.0).xyz;
+}
+fn voxel_color(info: StepResult) -> vec3<f32> {
+    let vox = info.voxel;
+    let material = scene.materials[vox.material];
+    //return abs(info.normal);
+    // return abs(vox.normal);
+    // return vec3(material.opacity);
+    return vec3<f32>(info.new_ray.position) / f32(CHUNK_SIZE); // MATERIALS DON'T WORK
+    // return vec3(f32(vox.material));
 }
 
 @compute @workgroup_size(16, 16, 1) // To be changed?
@@ -217,7 +275,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         if final_info.hit {
             //let dist = distance(ray_pos, final_info.new_ray.position) / (scene.size.x * 4.0);
             //out_color = vec3(1.0-dist);
-            out_color = abs(final_info.normal);
+            out_color = voxel_color(final_info);
         } else {
             out_color = skybox_color(ray.direction);
         }

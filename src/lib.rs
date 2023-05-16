@@ -175,7 +175,11 @@ impl State {
 
         // WORLD -----------------
         let mut scene = scene::Scene::new();
-        scene.chunk_at(uvec3(0,0,0)).fill_borders(0, uvec3(1, 1, 1));
+        scene.chunk_at(uvec3(0,0,0)).fill_borders(0, uvec3(255, 255, 255));
+        scene.chunk_at(uvec3(1, 1, 1)).fill_borders(1, uvec3(255, 255, 0));
+        scene.chunk_at(uvec3(2, 3, 4)).fill_sphere(2, uvec3(240, 115, 80));
+        scene.chunk_at(uvec3(3, 3, 3)).fill_sphere(3, uvec3(244, 0, 0));
+        scene.chunk_at(uvec3(0, 2, 0)).fill_borders(5, uvec3(0, 0, 255)); // Shouldn't be visible
         let scene_buffer = device.create_buffer_init(
             &wgpu::util::BufferInitDescriptor {
                 label: Some("scene buffer"),

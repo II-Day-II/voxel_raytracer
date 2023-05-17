@@ -118,13 +118,10 @@ impl Chunk {
         }
     }
     pub fn fill_borders(&mut self, material: u32, albedo: UVec3) {
-        let sx = self.pos[0] as u32;
-        let sy = self.pos[1] as u32;
-        let sz = self.pos[2] as u32;
-        for z in 0..sz {
-            for y in 0..sy {
-                for x in 0..sx {
-                    if (x == 0 || x == CHUNK_SIZE as u32) && (y == 0 || y == CHUNK_SIZE as u32) && (z == 0 || z == CHUNK_SIZE as u32) {
+        for z in 0..CHUNK_SIZE as u32 {
+            for y in 0..CHUNK_SIZE as u32 {
+                for x in 0..CHUNK_SIZE as u32 {
+                    if (x == 0 || x == CHUNK_SIZE as u32 - 1) || (y == 0 || y == CHUNK_SIZE as u32 - 1) || (z == 0 || z == CHUNK_SIZE as u32 - 1) {
                         let pos = uvec3(x, y, z);
                         let idx = flatten_index(pos, UVec3::ONE * CHUNK_SIZE as u32);
                         let normal = (pos.as_vec3() - Vec3::ONE * CHUNK_SIZE as f32 / 2.0).signum().normalize();
@@ -132,6 +129,7 @@ impl Chunk {
                             material,
                             albedo,
                             normal,
+                            id: idx as u32,
                         }.compress();
                     }
                 }
@@ -144,21 +142,19 @@ impl Chunk {
         }
     }
     pub fn fill_sphere(&mut self, material: u32, albedo: UVec3) {
-        let sx = self.pos[0] as u32;
-        let sy = self.pos[1] as u32;
-        let sz = self.pos[2] as u32;
         let center = Vec3::ONE * CHUNK_SIZE as f32 / 2.0;
-        for z in 0..sz {
-            for y in 0..sy {
-                for x in 0..sx {
+        for z in 0..CHUNK_SIZE as u32 {
+            for y in 0..CHUNK_SIZE as u32 {
+                for x in 0..CHUNK_SIZE  as u32 {
                     let pos = uvec3(x, y, z).as_vec3();
-                    if center.distance(pos) < CHUNK_SIZE as f32 / 2.0 {
+                    if center.distance(pos) < CHUNK_SIZE as f32 / 4.0 {
                         let idx = flatten_index(pos.as_uvec3(), UVec3::ONE * CHUNK_SIZE as u32);
                         let normal = (pos - center).normalize();
                         self.voxels[idx] = Voxel {
                             material,
                             albedo,
                             normal,
+                            id: idx as u32,
                         }.compress();
                     }
                 }
@@ -182,6 +178,7 @@ pub struct Voxel {
     normal: Vec3, // normal of this voxel
     albedo: UVec3, // albedo of this voxel
     material: u32, // index into material array
+    id: u32,
 }
 
 impl Voxel {
@@ -189,16 +186,17 @@ impl Voxel {
         let normal = ((self.normal * 255.0) + 255.0).as_uvec3() / 2;
         CompressedVoxel {
             normal: (self.material << 24 & 0xFF) | (normal.x << 16 & 0xFF) | (normal.y << 8 & 0xFF) | (normal.z & 0xFF), 
-            albedo: (self.albedo.x << 24 & 0xFF) | (self.albedo.y << 16 & 0xFF) | (self.albedo.z << 8 & 0xFF),
+            albedo: (self.albedo.x << 24 & 0xFF) | (self.albedo.y << 16 & 0xFF) | (self.albedo.z << 8 & 0xFF) | self.id & 0xFF,
         }
     }
 }
 impl Default for Voxel {
     fn default() -> Self {
         Self {
-            material: (NUM_MATERIALS + 2) as u32, // a material that doesn't exist
+            material: (255) as u32, // a material that doesn't exist
             normal: Vec3::ZERO, // doesn't matter for an invisible voxel anyway
             albedo: UVec3::ONE * 255, // white
+            id: 0,
         }
     }
 }
@@ -224,6 +222,7 @@ impl CompressedVoxel {
             material,
             normal,
             albedo,
+            id: self.albedo & 0xFF,
         }
     }
 }

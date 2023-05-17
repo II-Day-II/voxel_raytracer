@@ -119,9 +119,9 @@ impl State {
 
         // CAMERA --------------------
         let camera = Camera::new(
-            (7.0, 7.0, 7.0).into(), // 
-            225.0f32.to_radians(), // looking diagonally along xz
-            -45.0f32.to_radians(), // looking slightly down
+            (-4.0, 4.0, -4.0).into(), // slightly away from scene
+            45.0f32.to_radians(), // looking diagonally along xz
+            -25.0f32.to_radians(), // looking slightly down
             config.width as f32 / config.height as f32,
             59.0f32.to_radians(), // vertical fov corresponding to 90 degrees horizontal on a 16:9 screen
             0.1,
@@ -177,9 +177,9 @@ impl State {
         let mut scene = scene::Scene::new();
         scene.chunk_at(uvec3(0,0,0)).fill_borders(0, uvec3(255, 255, 255));
         scene.chunk_at(uvec3(1, 1, 1)).fill_borders(1, uvec3(255, 255, 0));
-        scene.chunk_at(uvec3(2, 3, 4)).fill_sphere(2, uvec3(240, 115, 80));
+        scene.chunk_at(uvec3(2, 2, 2)).fill_sphere(2, uvec3(240, 115, 80));
         scene.chunk_at(uvec3(3, 3, 3)).fill_sphere(3, uvec3(244, 0, 0));
-        scene.chunk_at(uvec3(0, 2, 0)).fill_borders(5, uvec3(0, 0, 255)); // Shouldn't be visible
+        scene.chunk_at(uvec3(4, 4, 4)).fill_borders(5, uvec3(0, 0, 255)); // Shouldn't be visible
         let scene_buffer = device.create_buffer_init(
             &wgpu::util::BufferInitDescriptor {
                 label: Some("scene buffer"),

@@ -35,13 +35,10 @@ struct CompressedVoxel {
 fn decompress_voxel(in: CompressedVoxel) -> Voxel {
     var out: Voxel;
     let nr = decompress_uvec4(in.normal);
-    let normal = vec3<f32>(vec3<i32>(nr.yzw * 2u) - 255) / 255.0;
-    let material = nr.x;
     let ar = decompress_uvec4(in.albedo);
-    let albedo = vec3<f32>(ar.xyz) / 255.0;
-    out.normal = normal;
-    out.albedo = albedo;
-    out.material = material;
+    out.normal = vec3<f32>(vec3<i32>(nr.yzw * 2u) - 255) / 255.0; // [0..255] -> [-1..1]
+    out.material = nr.x;
+    out.albedo = vec3<f32>(ar.xyz) / 255.0; // [0..255] -> [0..1]
     return out;
 }
 struct Chunk {
@@ -72,9 +69,9 @@ fn in_scene_bounds(pos: vec3<i32>) -> bool {
 fn in_chunk_bounds(pos: vec3<i32>) -> bool {
     return pos.x < CHUNK_SIZE && pos.y < CHUNK_SIZE && pos.z < CHUNK_SIZE && pos.x >= 0 && pos.y >= 0 && pos.z >= 0;
 }
-fn compressed_voxel_at(chunk_idx: i32, chunk_pos: vec3<i32>) -> CompressedVoxel {
-    let chunk = &scene.chunk_map[chunk_idx];
-    let idx = get_chunk_index(chunk_pos);
+fn compressed_voxel_at(chunk_id: i32, pos_in_chunk: vec3<i32>) -> CompressedVoxel {
+    let idx = get_chunk_index(pos_in_chunk);
+    let chunk = &scene.chunk_map[chunk_id]; // have to take a reference to index array with non-const
     return (*chunk).voxels[idx]; 
 }
 
@@ -98,7 +95,7 @@ fn ray_at(ray: Ray, t: f32) -> vec3<f32> {
 
 struct DDA {
     ray: Ray,
-    pos: vec3<i32>, // the position in the chunk
+    pos: vec3<i32>, // the position in the chunk / the position of the chunk in the scene
     delta_dist: vec3<f32>, // distance ray has to travel to reach next cell in each direction
     step_dir: vec3<i32>, // direction the ray will step
     side_dist: vec3<f32>, // total distance ray has to travel to reach one additional step in each direction
@@ -132,6 +129,7 @@ struct StepResult {
     color_add: vec3<f32>,
     color_mul: vec3<f32>,
     // TODO: refraction
+    debug: u32, // to be removed, useful for drawing debug info
 }
 
 fn step_scene(ray: Ray, max_depth: f32, ignore_first: bool) -> StepResult {
@@ -141,35 +139,33 @@ fn step_scene(ray: Ray, max_depth: f32, ignore_first: bool) -> StepResult {
     var dda: DDA = init_DDA(ray);
     var normal = box_normal(ray.position, vec3(0.0), scene.size.xyz);
     while in_scene_bounds(dda.pos) {
-        let index = get_scene_index(dda.pos);
-        let chunk = scene.chunk_map[index];
+        let chunk_id = get_scene_index(dda.pos);
+        let chunk = scene.chunk_map[chunk_id];
         if chunk.pos.w != 0.0 {  // the chunk has non-empty voxels
-            var chunk_ray: Ray; // ray to use for traversing in the chunk
-            chunk_ray.direction = dda.ray.direction;
-            chunk_ray.inv_direction = dda.ray.inv_direction;
+            var chunk_ray: Ray = dda.ray; // ray to use for traversing in the chunk
             let updated_ray_pos = dda.ray.position + dda.ray.direction * (min(min(last_side_dist.x, last_side_dist.y), last_side_dist.z) - EPSILON); // move to the chunk bounds
             chunk_ray.position = clamp((updated_ray_pos - vec3<f32>(dda.pos)) * vec3(f32(CHUNK_SIZE)), vec3(EPSILON), vec3(f32(CHUNK_SIZE)) - EPSILON); // set position relative to chunk bounds
-            let chunk_info = step_chunk(chunk_ray, chunk.pos.xyz, index);
+            let chunk_info = step_chunk(chunk_ray, chunk.pos.xyz, chunk_id);
             if chunk_info.hit {
                 result = chunk_info;
+                // result.new_ray.position = vec3<f32>(dda.pos); // useful for drawing chunk position
                 return result;
             }
         }
         last_side_dist = dda.side_dist;
         normal = step_DDA(&dda);
-
     }
     return result;
 }
 
-fn step_chunk(chunk_ray: Ray, chunk_pos: vec3<f32>, chunk_index: i32) -> StepResult {
+fn step_chunk(chunk_ray: Ray, chunk_pos: vec3<f32>, chunk_id: i32) -> StepResult {
     var result: StepResult;
     result.hit = false;
     var last_side_dist = vec3(0.0);
     var dda: DDA = init_DDA(chunk_ray);
     var normal = box_normal(chunk_ray.position, vec3(0.0), vec3(f32(CHUNK_SIZE)));
     while in_chunk_bounds(dda.pos) {
-        let compressed = compressed_voxel_at(chunk_index, dda.pos);
+        let compressed = compressed_voxel_at(chunk_id, dda.pos);
         let vox = decompress_voxel(compressed); 
         if vox.material < 4u { // TODO: change this hardcoded value
             let material = scene.materials[vox.material];
@@ -178,12 +174,12 @@ fn step_chunk(chunk_ray: Ray, chunk_pos: vec3<f32>, chunk_index: i32) -> StepRes
                 result.new_ray.position = vec3<f32>(dda.pos) + dda.ray.direction * (min(min(last_side_dist.x, last_side_dist.y), last_side_dist.z) - EPSILON);
                 result.normal = normal;
                 result.voxel = vox;
+                result.debug = compressed.albedo & 0xFFu;//vec2(get_chunk_index(dda.pos), chunk_id);// chunk_pos / 8.0 * vec3<f32>(dda.pos) / 8.0;
                 return result;
             }
         }
         last_side_dist = dda.side_dist;
         normal = step_DDA(&dda);
-        return result;
     }
     return result;
 }
@@ -236,8 +232,10 @@ fn voxel_color(info: StepResult) -> vec3<f32> {
     //return abs(info.normal);
     // return abs(vox.normal);
     // return vec3(material.opacity);
-    return vec3<f32>(info.new_ray.position) / f32(CHUNK_SIZE); // MATERIALS DON'T WORK
+    // return vec3<f32>(info.new_ray.position) / f32(CHUNK_SIZE); // MATERIALS DON'T WORK
     // return vec3(f32(vox.material));
+    //return vec3(vec2<f32>(info.debug) / 512.0, 0.0);
+    return vec3(f32(info.debug) / 512.0);
 }
 
 @compute @workgroup_size(16, 16, 1) // To be changed?
@@ -264,7 +262,6 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     if scene_intersection.x > scene_intersection.y || scene_intersection.y < 0.0 { // missed map if near > far or far < 0
         out_color = skybox_color(ray.direction); 
     } else {
-        // TODO: step through the map when it exists
         //out_color = box_normal(ray_at(ray, scene_intersection.x), vec3(0.0), map_size); 
         if scene_intersection.x > 0.0 { // move the ray to the edge of the map so it can DDA inside it
             ray.position += ray.direction * (scene_intersection.x + EPSILON);

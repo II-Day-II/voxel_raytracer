@@ -27,6 +27,8 @@ struct Voxel {
     material: u32,
     normal: vec3<f32>,
     albedo: vec3<f32>,
+    diffuse: vec3<f32>,
+    specular: vec3<f32>,
 }
 struct CompressedVoxel {
     normal: u32, // material index(8), x(8), y(8), z(8)
@@ -39,6 +41,9 @@ fn decompress_voxel(in: CompressedVoxel) -> Voxel {
     out.normal = vec3<f32>(vec3<i32>(nr.yzw * 2u) - 255) / 255.0; // [0..255] -> [-1..1]
     out.material = nr.x;
     out.albedo = vec3<f32>(ar.xyz) / 255.0; // [0..255] -> [0..1]
+    //TODO: send lighting data from cpu
+    out.diffuse = vec3(1.0);
+    out.specular = vec3(0.0);
     return out;
 }
 struct Chunk {
@@ -127,7 +132,7 @@ struct StepResult {
     normal: vec3<f32>, // the face normal of the hit voxel
     voxel: Voxel,
     color_add: vec3<f32>,
-    color_mul: vec3<f32>,
+    color_mul: f32,
     // TODO: refraction
     debug: u32, // to be removed, useful for drawing debug info
 }
@@ -135,6 +140,8 @@ struct StepResult {
 fn step_scene(ray: Ray, max_depth: f32, ignore_first: bool) -> StepResult {
     var result: StepResult;
     result.hit = false;
+    result.color_add = vec3(0.0);
+    result.color_mul = 1.0;
     var last_side_dist = vec3(0.0);
     var dda: DDA = init_DDA(ray);
     var normal = box_normal(ray.position, vec3(0.0), scene.size.xyz);
@@ -145,9 +152,8 @@ fn step_scene(ray: Ray, max_depth: f32, ignore_first: bool) -> StepResult {
             var chunk_ray: Ray = dda.ray; // ray to use for traversing in the chunk
             let updated_ray_pos = dda.ray.position + dda.ray.direction * (min(min(last_side_dist.x, last_side_dist.y), last_side_dist.z) - EPSILON); // move to the chunk bounds
             chunk_ray.position = clamp((updated_ray_pos - vec3<f32>(dda.pos)) * vec3(f32(CHUNK_SIZE)), vec3(EPSILON), vec3(f32(CHUNK_SIZE)) - EPSILON); // set position relative to chunk bounds
-            let chunk_info = step_chunk(chunk_ray, chunk.pos.xyz, chunk_id);
-            if chunk_info.hit {
-                result = chunk_info;
+            result = step_chunk(chunk_ray, chunk_id, result);
+            if result.hit {
                 // result.new_ray.position = vec3<f32>(dda.pos); // useful for drawing chunk position
                 return result;
             }
@@ -158,16 +164,20 @@ fn step_scene(ray: Ray, max_depth: f32, ignore_first: bool) -> StepResult {
     return result;
 }
 
-fn step_chunk(chunk_ray: Ray, chunk_pos: vec3<f32>, chunk_id: i32) -> StepResult {
-    var result: StepResult;
+var<private> last_vox_id: u32 = 255u; // the last hit voxel's albedo and material, used for transparency
+var<private> last_vox_refract: f32 = 1.0; // last hit voxel's refraction index, used for TODO: refraction
+
+fn step_chunk(chunk_ray: Ray, chunk_id: i32, partial_result: StepResult) -> StepResult {
+    var result: StepResult = partial_result;
     result.hit = false;
     var last_side_dist = vec3(0.0);
     var dda: DDA = init_DDA(chunk_ray);
     var normal = box_normal(chunk_ray.position, vec3(0.0), vec3(f32(CHUNK_SIZE)));
     while in_chunk_bounds(dda.pos) {
         let compressed = compressed_voxel_at(chunk_id, dda.pos);
+        let vox_id = (compressed.albedo & 0xFFFFFF00u) | (compressed.normal >> 24u);
         let vox = decompress_voxel(compressed); 
-        if vox.material < 4u { // TODO: change this hardcoded value
+        if vox.material != 255u { // would be a constant for MATERIAL_EMPTY instead of 255
             let material = scene.materials[vox.material];
             if material.opacity >= 1.0 {
                 result.hit = true;
@@ -177,6 +187,18 @@ fn step_chunk(chunk_ray: Ray, chunk_pos: vec3<f32>, chunk_id: i32) -> StepResult
                 result.debug = compressed.albedo & 0xFFu;//vec2(get_chunk_index(dda.pos), chunk_id);// chunk_pos / 8.0 * vec3<f32>(dda.pos) / 8.0;
                 return result;
             }
+            else if last_vox_id != vox_id {
+                result.color_add += result.color_mul * material.opacity * vox.albedo; // * sun_strength;
+                result.color_mul *= 1.0 - material.opacity;
+                //TODO: refraction
+                last_vox_id = vox_id;
+                last_vox_refract = material.refraction_index;
+            }
+        }
+        else if last_vox_id != 255u {
+            // TODO: refraction
+            last_vox_id = 255u;
+            last_vox_refract = 1.0;
         }
         last_side_dist = dda.side_dist;
         normal = step_DDA(&dda);
@@ -229,13 +251,17 @@ fn skybox_color(direction: vec3<f32>) -> vec3<f32> {
 fn voxel_color(info: StepResult) -> vec3<f32> {
     let vox = info.voxel;
     let material = scene.materials[vox.material];
-    //return abs(info.normal);
-    // return abs(vox.normal);
-    // return vec3(material.opacity);
-    // return vec3<f32>(info.new_ray.position) / f32(CHUNK_SIZE); // MATERIALS DON'T WORK
-    // return vec3(f32(vox.material));
-    //return vec3(vec2<f32>(info.debug) / 512.0, 0.0);
-    return vec3(f32(info.debug) / 512.0);
+    var solid_color: vec3<f32>;
+    if material.emissive != 0u { // material is emissive
+        solid_color = vox.albedo;
+    } else {
+        solid_color = vox.albedo * vox.diffuse + vox.specular;
+    }
+    return solid_color * info.color_mul + info.color_add; // total lighting
+    // return abs(info.normal); // face normal
+    // return abs(vox.normal); // per-voxel normal
+    // return vec3<f32>(info.new_ray.position) / f32(CHUNK_SIZE); // voxel position in chunk
+    // return vox.albedo; // albedo
 }
 
 @compute @workgroup_size(16, 16, 1) // To be changed?
@@ -274,7 +300,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
             //out_color = vec3(1.0-dist);
             out_color = voxel_color(final_info);
         } else {
-            out_color = skybox_color(ray.direction);
+            out_color = skybox_color(ray.direction) * final_info.color_mul + final_info.color_add;
         }
     }
     //out_color = mandelbrot((screen_pos - vec2(0.25, 0.0)) * vec2(1.0, 0.75));

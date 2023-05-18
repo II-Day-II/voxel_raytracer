@@ -3,6 +3,7 @@ use glam::{Vec3, UVec3, ivec3, uvec3, vec3, Vec4, Vec4Swizzles};
 pub const SCENE_SIZE: usize = 8; // scene is 8x8x8 chunks
 pub const CHUNK_SIZE: usize = 8; // chunks are 8x8x8 voxels
 const NUM_MATERIALS: usize = 4;
+const MATERIAL_EMPTY: u32 = 255;
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -11,6 +12,7 @@ pub struct TempScene {
     pub size: [f32;3],
     padding: u32,
 }
+#[allow(dead_code)]
 impl TempScene {
     pub fn into_buffer(&self) -> &[u8] {
         bytemuck::bytes_of(self)
@@ -121,24 +123,19 @@ impl Chunk {
         for z in 0..CHUNK_SIZE as u32 {
             for y in 0..CHUNK_SIZE as u32 {
                 for x in 0..CHUNK_SIZE as u32 {
+                    let pos = uvec3(x, y, z);
                     if (x == 0 || x == CHUNK_SIZE as u32 - 1) || (y == 0 || y == CHUNK_SIZE as u32 - 1) || (z == 0 || z == CHUNK_SIZE as u32 - 1) {
-                        let pos = uvec3(x, y, z);
                         let idx = flatten_index(pos, UVec3::ONE * CHUNK_SIZE as u32);
-                        let normal = (pos.as_vec3() - Vec3::ONE * CHUNK_SIZE as f32 / 2.0).signum().normalize();
-                        self.voxels[idx] = Voxel {
-                            material,
-                            albedo,
-                            normal,
-                            id: idx as u32,
-                        }.compress();
+                        let normal = (pos.as_vec3() - Vec3::ONE * CHUNK_SIZE as f32 / 2.0).normalize();
+                        self.modify_voxel_at(pos, |vox| {
+                            vox.material = material;
+                            vox.albedo = albedo;
+                            vox.normal = normal;
+                            vox.id = idx as u32;
+                        });
                     }
                 }
             }
-        }
-        if material < NUM_MATERIALS as u32 {
-            self.pos.w = 1.0;
-        } else {
-            self.pos.w = 0.0;
         }
     }
     pub fn fill_sphere(&mut self, material: u32, albedo: UVec3) {
@@ -147,28 +144,29 @@ impl Chunk {
             for y in 0..CHUNK_SIZE as u32 {
                 for x in 0..CHUNK_SIZE  as u32 {
                     let pos = uvec3(x, y, z).as_vec3();
-                    if center.distance(pos) < CHUNK_SIZE as f32 / 4.0 {
-                        let idx = flatten_index(pos.as_uvec3(), UVec3::ONE * CHUNK_SIZE as u32);
+                    let idx = flatten_index(pos.as_uvec3(), UVec3::ONE * CHUNK_SIZE as u32);
+                    if center.distance(pos) < CHUNK_SIZE as f32 / 2.0 {
                         let normal = (pos - center).normalize();
-                        self.voxels[idx] = Voxel {
-                            material,
-                            albedo,
-                            normal,
-                            id: idx as u32,
-                        }.compress();
+                        self.modify_voxel_at(pos.as_uvec3(), |vox| {
+                            vox.material = material;
+                            vox.albedo = albedo;
+                            vox.normal = normal;
+                            vox.id = idx as u32;
+                        });
                     }
                 }
             }
         }
-        if material < NUM_MATERIALS as u32 {
-            self.pos.w = 1.0;
-        } else {
-            self.pos.w = 0.0;
-        }
     }
-    pub fn compressed_voxel_at(&mut self, pos: UVec3) -> &mut CompressedVoxel {
+    pub fn modify_voxel_at<F>(&mut self, pos: UVec3, mut modifier: F) where F: FnMut(&mut Voxel) {
         let idx = flatten_index(pos, UVec3::ONE * CHUNK_SIZE as u32);
-        &mut self.voxels[idx]
+        let mut vox = self.voxels[idx].decompress();
+        modifier(&mut vox);
+        self.voxels[idx] = vox.compress();
+        self.update_visibility();
+    }
+    fn update_visibility(&mut self) {
+        self.pos.w = if self.voxels.iter().all(|v| v.normal >> 24 & 0xFF == MATERIAL_EMPTY) {0.0} else {1.0}; // make invisible if all voxels have empty material
     }
 }
 
@@ -185,15 +183,15 @@ impl Voxel {
     pub fn compress(&self) -> CompressedVoxel {
         let normal = ((self.normal * 255.0) + 255.0).as_uvec3() / 2;
         CompressedVoxel {
-            normal: (self.material << 24 & 0xFF) | (normal.x << 16 & 0xFF) | (normal.y << 8 & 0xFF) | (normal.z & 0xFF), 
-            albedo: (self.albedo.x << 24 & 0xFF) | (self.albedo.y << 16 & 0xFF) | (self.albedo.z << 8 & 0xFF) | self.id & 0xFF,
+            normal: ((self.material & 0xFF) << 24) | ((normal.x & 0xFF) << 16) | ((normal.y & 0xFF) << 8) | (normal.z & 0xFF), 
+            albedo: ((self.albedo.x & 0xFF) << 24) | ((self.albedo.y & 0xFF) << 16) | ((self.albedo.z & 0xFF) << 8) | self.id & 0xFF,
         }
     }
 }
 impl Default for Voxel {
     fn default() -> Self {
         Self {
-            material: (255) as u32, // a material that doesn't exist
+            material: MATERIAL_EMPTY, // 255, a material that doesn't exist
             normal: Vec3::ZERO, // doesn't matter for an invisible voxel anyway
             albedo: UVec3::ONE * 255, // white
             id: 0,

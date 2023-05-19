@@ -53,6 +53,8 @@ struct State {
     clear_color: wgpu::Color,
 
     scene_bind_group: wgpu::BindGroup,
+    scene_buffer: wgpu::Buffer,
+    scene: scene::Scene,
 }
 
 impl State {
@@ -183,7 +185,7 @@ impl State {
             &wgpu::util::BufferInitDescriptor {
                 label: Some("scene buffer"),
                 contents: &scene.into_buffer(),
-                usage: wgpu::BufferUsages::STORAGE, // should this maybe be uniform??
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, // must be storage, so we can read and write in shader
             }
         );
         let scene_bind_group_layout = device.create_bind_group_layout(
@@ -194,7 +196,7 @@ impl State {
                         binding: 0,
                         visibility: wgpu::ShaderStages::COMPUTE,
                         ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            ty: wgpu::BufferBindingType::Storage { read_only: false },
                             has_dynamic_offset: false,
                             min_binding_size: None,
                         },
@@ -300,7 +302,9 @@ impl State {
             camera_buffer,
             camera_bind_group,
             
-            scene_bind_group
+            scene_bind_group,
+            scene_buffer,
+            scene,
         }
     }
 
@@ -369,6 +373,8 @@ impl State {
     fn update(&mut self, dt: instant::Duration) {
         self.camera.update(dt);
         self.queue.write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&self.camera.uniform()));
+        self.scene.update(dt);
+        self.queue.write_buffer(&self.scene_buffer, 64, bytemuck::bytes_of(&self.scene.time()));
         self.window.set_title(&format!("Voxel Raytracing -- Frame time: {:05.2}ms", dt.as_secs_f32()*1000.0));
     }
 
@@ -387,8 +393,8 @@ impl State {
             compute_pass.set_bind_group(0, &self.raytrace_bind_group, &[]);
             compute_pass.set_bind_group(1, &self.camera_bind_group, &[]);
             compute_pass.set_bind_group(2, &self.scene_bind_group, &[]);
-            // Workgroup size in shader is 1, 1, 1, which means each workgroup does one pixel?
-            compute_pass.dispatch_workgroups(self.config.width / 15, self.config.height / 15, 1); // TODO: FIND OUT WHAT TO DO WITH WORKGROUP SIZES
+            // Workgroup size in shader is 16, 16, 1, which means each workgroup does 16x16 pixels
+            compute_pass.dispatch_workgroups(self.config.width / 15, self.config.height / 15, 1); // should use ceil_div by workgroup size instead of 15
         }
 
         { // scope drops render pass at the end, so we can call encoder.finish()

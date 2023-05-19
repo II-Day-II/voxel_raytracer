@@ -53,6 +53,10 @@ impl Default for TempScene {
 
 pub struct Scene {
     size: Vec4, // number of chunks per dimension in this scene. Should be SCENE_SIZE.
+    sun_direction: Vec4,
+    sun_strength: Vec4,
+    ambient_light: Vec4,
+    time: i32,
     chunks: Vec<Chunk>,
     materials: [Material;NUM_MATERIALS],
 }
@@ -61,9 +65,14 @@ impl Scene {
     pub fn into_buffer(&self) -> Vec<u8> {
         // bytemuck::bytes_of(self)
         let size = bytemuck::bytes_of(&self.size);
+        let sun_pos = bytemuck::bytes_of(&self.sun_direction);
+        let sun_str = bytemuck::bytes_of(&self.sun_strength);
+        let ambient_str = bytemuck::bytes_of(&self.ambient_light);
+        let time = bytemuck::bytes_of(&self.time);
         let chunks = bytemuck::cast_slice(&self.chunks);
         let materials = bytemuck::cast_slice(&self.materials);
-        [size, chunks, materials].concat()
+        let padding = bytemuck::bytes_of(&[0u32,0,0]);
+        [size, sun_pos, sun_str, ambient_str, time, padding, chunks, materials].concat() // woo, padding :)))
     }
     pub fn new() -> Self {
         let mut materials = std::array::from_fn(|_| Material::default());
@@ -96,6 +105,10 @@ impl Scene {
         let chunks =  (0..SCENE_SIZE*SCENE_SIZE*SCENE_SIZE).map(|i| Chunk::empty(i)).collect::<Vec<_>>();
         Self {
             size: Vec4::from_array([SCENE_SIZE as f32;4]),
+            sun_direction: Vec4::new(-0.5, 1.0, -0.5, 0.0),
+            sun_strength: Vec4::new(0.6, 0.6, 0.6, 0.0),
+            ambient_light: Vec4::new(0.01, 0.01, 0.01, 0.0),
+            time: 0,
             chunks,
             materials
         }
@@ -103,6 +116,12 @@ impl Scene {
     pub fn chunk_at(&mut self, pos: UVec3) -> &mut Chunk {
         let idx = flatten_index(pos, self.size.xyz().as_uvec3());
         &mut self.chunks[idx]
+    }
+    pub fn update(&mut self, dt: instant::Duration) {
+        self.time += dt.as_millis() as i32;
+    }
+    pub fn time(&self) -> i32 {
+        self.time
     }
 }
 
@@ -125,13 +144,11 @@ impl Chunk {
                 for x in 0..CHUNK_SIZE as u32 {
                     let pos = uvec3(x, y, z);
                     if (x == 0 || x == CHUNK_SIZE as u32 - 1) || (y == 0 || y == CHUNK_SIZE as u32 - 1) || (z == 0 || z == CHUNK_SIZE as u32 - 1) {
-                        let idx = flatten_index(pos, UVec3::ONE * CHUNK_SIZE as u32);
                         let normal = (pos.as_vec3() - Vec3::ONE * CHUNK_SIZE as f32 / 2.0).normalize();
                         self.modify_voxel_at(pos, |vox| {
                             vox.material = material;
                             vox.albedo = albedo;
                             vox.normal = normal;
-                            vox.id = idx as u32;
                         });
                     }
                 }
@@ -144,14 +161,12 @@ impl Chunk {
             for y in 0..CHUNK_SIZE as u32 {
                 for x in 0..CHUNK_SIZE  as u32 {
                     let pos = uvec3(x, y, z).as_vec3();
-                    let idx = flatten_index(pos.as_uvec3(), UVec3::ONE * CHUNK_SIZE as u32);
                     if center.distance(pos) < CHUNK_SIZE as f32 / 2.0 {
                         let normal = (pos - center).normalize();
                         self.modify_voxel_at(pos.as_uvec3(), |vox| {
                             vox.material = material;
                             vox.albedo = albedo;
                             vox.normal = normal;
-                            vox.id = idx as u32;
                         });
                     }
                 }
@@ -176,7 +191,6 @@ pub struct Voxel {
     normal: Vec3, // normal of this voxel
     albedo: UVec3, // albedo of this voxel
     material: u32, // index into material array
-    id: u32,
 }
 
 impl Voxel {
@@ -184,7 +198,9 @@ impl Voxel {
         let normal = ((self.normal * 255.0) + 255.0).as_uvec3() / 2;
         CompressedVoxel {
             normal: ((self.material & 0xFF) << 24) | ((normal.x & 0xFF) << 16) | ((normal.y & 0xFF) << 8) | (normal.z & 0xFF), 
-            albedo: ((self.albedo.x & 0xFF) << 24) | ((self.albedo.y & 0xFF) << 16) | ((self.albedo.z & 0xFF) << 8) | self.id & 0xFF,
+            albedo: ((self.albedo.x & 0xFF) << 24) | ((self.albedo.y & 0xFF) << 16) | ((self.albedo.z & 0xFF) << 8),
+            spec_light: 0, // these fields are only used on the GPU, don't matter here
+            diff_light: 0,
         }
     }
 }
@@ -194,7 +210,6 @@ impl Default for Voxel {
             material: MATERIAL_EMPTY, // 255, a material that doesn't exist
             normal: Vec3::ZERO, // doesn't matter for an invisible voxel anyway
             albedo: UVec3::ONE * 255, // white
-            id: 0,
         }
     }
 }
@@ -204,7 +219,9 @@ impl Default for Voxel {
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct CompressedVoxel {
     normal: u32, // material index (8 bits), normal.x, normal.y, normal.z (24 bits)
-    albedo: u32, // albedo.r (8), albedo.g (8), abedo.b (8), unused (8)
+    albedo: u32, // albedo.r (8), albedo.g (8), albedo.b (8), spec.x (8)
+    spec_light: u32, // spec.y(8), spec.z(8), diff.x(16)
+    diff_light: u32, // diff.y(16), diff.z(16)
 }
 
 impl CompressedVoxel {
@@ -220,7 +237,6 @@ impl CompressedVoxel {
             material,
             normal,
             albedo,
-            id: self.albedo & 0xFF,
         }
     }
 }

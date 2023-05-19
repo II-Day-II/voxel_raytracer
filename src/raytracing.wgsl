@@ -23,6 +23,11 @@ fn decompress_uvec4(in: u32) -> vec4<u32> {
     return vec4(x, y, z, w);
 }
 
+fn compress_uvec4(in: vec4<u32>) -> u32 {
+    let in = in & vec4(0xFFu);
+    return (in.x << 24u) | (in.y << 16u) | (in.z << 8u) | in.w;
+}
+
 struct Voxel {
     material: u32,
     normal: vec3<f32>,
@@ -32,18 +37,27 @@ struct Voxel {
 }
 struct CompressedVoxel {
     normal: u32, // material index(8), x(8), y(8), z(8)
-    albedo: u32, // r(8), g(8), b(8), unused(8)
+    albedo: u32, // r(8), g(8), b(8), spec.x(8)
+    spec_light: u32, // spec.y(8), spec.z(8), diff.x(16)
+    diff_light: u32, // diff.y(16), diff.z(16)
 }
 fn decompress_voxel(in: CompressedVoxel) -> Voxel {
     var out: Voxel;
     let nr = decompress_uvec4(in.normal);
     let ar = decompress_uvec4(in.albedo);
+    let sr = decompress_uvec4(in.spec_light);
+    let dr = decompress_uvec4(in.diff_light);
+
     out.normal = vec3<f32>(vec3<i32>(nr.yzw * 2u) - 255) / 255.0; // [0..255] -> [-1..1]
     out.material = nr.x;
     out.albedo = vec3<f32>(ar.xyz) / 255.0; // [0..255] -> [0..1]
     //TODO: send lighting data from cpu
-    out.diffuse = vec3(1.0);
-    out.specular = vec3(0.0);
+    let diffuse_high = vec3(sr.z, dr.x, dr.z) << vec3(8u);
+    let diffuse_low = vec3(sr.w, dr.y, dr.w);
+    let diffuse = diffuse_high | diffuse_low;
+
+    out.diffuse = vec3<f32>(diffuse) / 65535.0;
+    out.specular = vec3(f32(ar.w), vec2<f32>(sr.xy)) / 255.0;
     return out;
 }
 struct Chunk {
@@ -59,11 +73,15 @@ struct Material {
 }
 struct Scene {
     size: vec4<f32>,
+    sun_direction: vec4<f32>,
+    sun_strength: vec4<f32>,
+    ambient_light: vec4<f32>,
+    time: i32,
     chunk_map: array<Chunk, 512>, // change this!!!
     materials: array<Material, 4>, // how make dynamically sized?
 }
 @group(2) @binding(0)
-var<storage, read> scene: Scene;
+var<storage, read_write> scene: Scene;
 
 // whether or not a position is within the scene
 fn in_scene_bounds(pos: vec3<i32>) -> bool {
@@ -184,7 +202,7 @@ fn step_chunk(chunk_ray: Ray, chunk_id: i32, partial_result: StepResult) -> Step
                 result.new_ray.position = vec3<f32>(dda.pos) + dda.ray.direction * (min(min(last_side_dist.x, last_side_dist.y), last_side_dist.z) - EPSILON);
                 result.normal = normal;
                 result.voxel = vox;
-                result.debug = compressed.albedo & 0xFFu;//vec2(get_chunk_index(dda.pos), chunk_id);// chunk_pos / 8.0 * vec3<f32>(dda.pos) / 8.0;
+                result.debug = compressed.albedo & 0xFFu;//vec2(get_chunk_index(dda.pos), chunk_id);
                 return result;
             }
             else if last_vox_id != vox_id {
@@ -257,14 +275,15 @@ fn voxel_color(info: StepResult) -> vec3<f32> {
     } else {
         solid_color = vox.albedo * vox.diffuse + vox.specular;
     }
-    return solid_color * info.color_mul + info.color_add; // total lighting
+    return solid_color * info.color_mul + info.color_add; // total lighting 
+    // return solid_color * sin(f32(scene.time / 10)) * info.color_mul + info.color_add; // visualize time
     // return abs(info.normal); // face normal
     // return abs(vox.normal); // per-voxel normal
     // return vec3<f32>(info.new_ray.position) / f32(CHUNK_SIZE); // voxel position in chunk
     // return vox.albedo; // albedo
 }
 
-@compute @workgroup_size(16, 16, 1) // To be changed?
+@compute @workgroup_size(16, 16, 1) // Does the raytracing from the camera to the closest voxel, drawing the color to the final texture.
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     var out_color: vec3<f32>;    
 
@@ -308,4 +327,99 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     //out_color = vec3(vec2<f32>(texture_pos)/vec2<f32>(texture_dim), 0.0);
     //out_color = vec3(screen_pos, 0.0);
     textureStore(screen, texture_pos, vec4<f32>(out_color, 1.0));
+}
+
+
+// Performs lighting calculations every frame, storing them in the individual voxels
+@compute @workgroup_size(8, 8, 8)
+fn lighting_main(@builtin(workgroup_id) wg_id: vec3<u32>, @builtin(local_invocation_id) invoc_id: vec3<u32>) {
+
+    let num_diffuse_samples = 15;
+
+    let scene_pos = vec3<i32>(wg_id);
+    let pos_in_chunk = vec3<i32>(invoc_id);
+    if !in_chunk_bounds(pos_in_chunk) || !in_scene_bounds(scene_pos) {
+        return;
+    }
+    let compressed = compressed_voxel_at(get_scene_index(scene_pos), pos_in_chunk);
+    let this_voxel = decompress_voxel(compressed);
+    let this_material = scene.materials[this_voxel.material];
+    // start the ray at the center of the voxel
+    let inv_chunk_size = vec3(1.0/f32(CHUNK_SIZE)); 
+    let half_inv_chunk_size = inv_chunk_size / 2.0;
+    let ray_pos: vec3<f32> = vec3<f32>(pos_in_chunk) * inv_chunk_size // the number of eights of a chunk away from the chunk origin corner
+        + vec3<f32>(scene_pos) // the chunk origin corner
+        + half_inv_chunk_size  // to the middle of the voxel
+        + (half_inv_chunk_size - vec3(EPSILON)) * this_voxel.normal; // bias slightly on the normal of the vector
+    
+    // TODO: should be moved into a struct probably
+    var spec_light: vec3<f32> = vec3(0.0);
+    var diff_light: vec3<f32> = vec3(0.0);
+    
+    let view_dir = normalize(ray_pos - camera.position.xyz);
+    // specular rays
+    if this_material.specular > 0.0 && dot(view_dir, this_voxel.normal) < 0.0 { // view ray is looking at the voxel face from the front
+        var sphere_points = array<vec3<f32>,15>( // points on unit sphere, taken from DoonEngine. Must be var since there are no consts and let-bindings can't be indexed by non consts
+            vec3(0.000000, 1.000000, 0.000000), 
+            vec3(-0.379803, 0.857143, 0.347931), 
+            vec3(0.061185, 0.714286, -0.697174), 
+            vec3(0.499316, 0.571429, 0.651270), 
+            vec3(-0.889696, 0.428571, -0.157375), 
+            vec3(0.808584, 0.285714, -0.514354), 
+            vec3(-0.256942, 0.142857, 0.955810), 
+            vec3(-0.460906, 0.000000, -0.887449), 
+            vec3(0.929687, -0.142857, 0.339521), 
+            vec3(-0.885815, -0.285714, 0.365650), 
+            vec3(0.382949, -0.428571, -0.818338), 
+            vec3(0.245607, -0.571429, 0.783037), 
+            vec3(-0.605521, -0.714286, -0.350913), 
+            vec3(0.503065, -0.857143, -0.110596), 
+            vec3(-0.000000, -1.000000, 0.000000)
+        );
+
+        let reflected = reflect(view_dir, this_voxel.normal);
+        for (var i: i32 = 0; i < 15; i++) {
+            let specular_dir = normalize(reflected * this_material.shininess + sphere_points[i]) + EPSILON;
+            var spec_ray: Ray;
+            spec_ray.direction = specular_dir;
+            spec_ray.inv_direction = 1.0 / specular_dir;
+            spec_ray.position = ray_pos;
+            spec_light = specular_ray(scene_pos, spec_ray, this_voxel, spec_light);
+        }
+        spec_light /= 15.0;
+    }
+    // diffuse + shadow rays
+    if this_material.specular < 1.0 {
+        for (var i: i32 = 0; i < num_diffuse_samples; i++) {
+            diff_light += scene.ambient_light.xyz;
+            diff_light = diffuse_ray(ray_pos, this_voxel, scene.time * (i + 1), diff_light);
+            diff_light = shadow_ray(ray_pos, scene.time * (i + 1), diff_light);
+        }
+        diff_light = (diff_light + this_voxel.diffuse) / f32(num_diffuse_samples);
+    }
+    // as this will be assumed to be in the range 0-1 when compressing and decompressing:
+    spec_light = clamp(spec_light, vec3(0.0), vec3(1.0));
+    diff_light = clamp(diff_light, vec3(0.0), vec3(1.0));
+
+    let store_diffuse = vec3<u32>(round(diff_light * 65535.0));
+    let diffuse_low_bytes = store_diffuse & vec3(0xFFu);
+    let diffuse_high_bytes = (store_diffuse >> vec3(8u)) & vec3(0xFFu);
+    // let idx = get_chunk_index(pos_in_chunk);
+    // let chunk = &scene.chunk_map[chunk_id]; // have to take a reference to index array with non-const
+    // return (*chunk).voxels[idx]; 
+    let scene_idx = get_scene_index(scene_pos);
+    let chunk_idx = get_chunk_index(pos_in_chunk);
+    scene.chunk_map[scene_idx].voxels[chunk_idx].albedo = compress_uvec4(vec4(vec3<u32>(round(this_voxel.albedo * 255.0)), u32(round(spec_light.x * 255.0))));
+    scene.chunk_map[scene_idx].voxels[chunk_idx].spec_light = compress_uvec4(vec4(vec2<u32>(round(spec_light.yz * 255.0)), diffuse_high_bytes.x, diffuse_low_bytes.x));
+    scene.chunk_map[scene_idx].voxels[chunk_idx].diff_light = compress_uvec4(vec4(diffuse_high_bytes.y, diffuse_low_bytes.y, diffuse_high_bytes.z, diffuse_low_bytes.z));
+}
+
+fn specular_ray(scene_pos: vec3<i32>, ray: Ray, vox: Voxel, spec_light: vec3<f32>) -> vec3<f32> {
+    return spec_light;
+}
+fn diffuse_ray(ray_pos: vec3<f32>, vox: Voxel, rng: i32, diff_light: vec3<f32>) -> vec3<f32> {
+    return diff_light;
+}
+fn shadow_ray(ray_pos: vec3<f32>, rng: i32, diff_light: vec3<f32>) -> vec3<f32> {
+    return diff_light;
 }

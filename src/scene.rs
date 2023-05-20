@@ -56,7 +56,7 @@ pub struct Scene {
     sun_direction: Vec4,
     sun_strength: Vec4,
     ambient_light: Vec4,
-    time: i32,
+    time: u32,
     chunks: Vec<Chunk>,
     materials: [Material;NUM_MATERIALS],
 }
@@ -118,9 +118,9 @@ impl Scene {
         &mut self.chunks[idx]
     }
     pub fn update(&mut self, dt: instant::Duration) {
-        self.time += dt.as_millis() as i32;
+        self.time += dt.as_millis() as u32;
     }
-    pub fn time(&self) -> i32 {
+    pub fn time(&self) -> u32 {
         self.time
     }
 }

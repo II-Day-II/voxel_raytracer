@@ -76,7 +76,7 @@ struct Scene {
     sun_direction: vec4<f32>,
     sun_strength: vec4<f32>,
     ambient_light: vec4<f32>,
-    time: i32,
+    time: u32,
     chunk_map: array<Chunk, 512>, // change this!!!
     materials: array<Material, 4>, // how make dynamically sized?
 }
@@ -155,7 +155,7 @@ struct StepResult {
     debug: u32, // to be removed, useful for drawing debug info
 }
 
-fn step_scene(ray: Ray, max_depth: f32, ignore_first: bool) -> StepResult {
+fn step_scene(ray: Ray, ignore_first: bool) -> StepResult {
     var result: StepResult;
     result.hit = false;
     result.color_add = vec3(0.0);
@@ -172,7 +172,7 @@ fn step_scene(ray: Ray, max_depth: f32, ignore_first: bool) -> StepResult {
             chunk_ray.position = clamp((updated_ray_pos - vec3<f32>(dda.pos)) * vec3(f32(CHUNK_SIZE)), vec3(EPSILON), vec3(f32(CHUNK_SIZE)) - EPSILON); // set position relative to chunk bounds
             result = step_chunk(chunk_ray, chunk_id, result);
             if result.hit {
-                // result.new_ray.position = vec3<f32>(dda.pos); // useful for drawing chunk position
+                result.new_ray.position = vec3<f32>(dda.pos) + result.new_ray.position / f32(CHUNK_SIZE); // hit position in scene space
                 return result;
             }
         }
@@ -301,8 +301,6 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     ray.direction = ray_dir;
     ray.inv_direction = 1.0 / ray_dir;
 
-    var max_depth = -1.0; // maybe not needed?
-
     let scene_intersection = intersect_box(ray, vec3(0.0), scene.size.xyz);
     if scene_intersection.x > scene_intersection.y || scene_intersection.y < 0.0 { // missed map if near > far or far < 0
         out_color = skybox_color(ray.direction); 
@@ -313,7 +311,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         }
         var final_normal = box_normal(ray.position, vec3(0.0), scene.size.xyz);
         
-        let final_info = step_scene(ray, max_depth, false);
+        let final_info = step_scene(ray, false);
         if final_info.hit {
             //let dist = distance(ray_pos, final_info.new_ray.position) / (scene.size.x * 4.0);
             //out_color = vec3(1.0-dist);
@@ -330,7 +328,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 }
 
 
-// Performs lighting calculations every frame, storing them in the individual voxels
+// Performs lighting calculations for every voxel in the scene, storing the output in the voxels themselves
 @compute @workgroup_size(8, 8, 8)
 fn lighting_main(@builtin(workgroup_id) wg_id: vec3<u32>, @builtin(local_invocation_id) invoc_id: vec3<u32>) {
 
@@ -392,8 +390,8 @@ fn lighting_main(@builtin(workgroup_id) wg_id: vec3<u32>, @builtin(local_invocat
     if this_material.specular < 1.0 {
         for (var i: i32 = 0; i < num_diffuse_samples; i++) {
             diff_light += scene.ambient_light.xyz;
-            diff_light = diffuse_ray(ray_pos, this_voxel, scene.time * (i + 1), diff_light);
-            diff_light = shadow_ray(ray_pos, scene.time * (i + 1), diff_light);
+            diff_light = diffuse_ray(ray_pos, this_voxel, scene.time * (u32(i) + 1u), diff_light);
+            diff_light = shadow_ray(ray_pos, scene.time * (u32(i) + 2u), diff_light);
         }
         diff_light = (diff_light + this_voxel.diffuse) / f32(num_diffuse_samples);
     }
@@ -414,12 +412,138 @@ fn lighting_main(@builtin(workgroup_id) wg_id: vec3<u32>, @builtin(local_invocat
     scene.chunk_map[scene_idx].voxels[chunk_idx].diff_light = compress_uvec4(vec4(diffuse_high_bytes.y, diffuse_low_bytes.y, diffuse_high_bytes.z, diffuse_low_bytes.z));
 }
 
+// cast a specular ray from vox at scene_pos, accumulating color in spec_light, which is returned
 fn specular_ray(scene_pos: vec3<i32>, ray: Ray, vox: Voxel, spec_light: vec3<f32>) -> vec3<f32> {
-    return spec_light;
+    let spec_bounce_limit = 6; // should maybe come from CPU
+    
+    var spec_light: vec3<f32> = spec_light;
+
+    var last_pos: vec3<f32> = ray.position;
+    var multiplier: vec3<f32> = vox.albedo; // accumulate color over the bounces
+    var mut_ray: Ray = ray;
+    for(var i: i32; i < spec_bounce_limit; i++) {
+        let info = step_scene(mut_ray, true); // TODO: take ignore_first into account
+        if info.hit {
+            let dist = abs(floor(info.new_ray.position * f32(CHUNK_SIZE)) - floor(last_pos * f32(CHUNK_SIZE)));
+            if dot(dist, dist) <= 1.0 { // ray hit the voxel next to the one being lit, meaning it's occluded from here
+                return spec_light;
+            }
+            var hit_voxel: Voxel = info.voxel;
+            let hit_material = scene.materials[hit_voxel.material];
+            hit_voxel.diffuse *= 1.0 - hit_material.specular;
+            if hit_material.emissive != 0u {
+                return spec_light + (hit_voxel.albedo * info.color_mul + info.color_add) * multiplier * vox.albedo;
+            } else {
+                let hit_color = hit_voxel.diffuse * hit_voxel.albedo;
+                spec_light += (hit_color * info.color_mul + info.color_add) * multiplier;
+                if hit_material.specular == 0.0 { // no more reflections needed
+                    return spec_light;
+                }
+                // bounce the ray
+                multiplier *= hit_voxel.albedo * info.color_mul * hit_material.specular;
+                last_pos = info.new_ray.position;
+                mut_ray.position = info.new_ray.position;
+                mut_ray.direction = reflect(mut_ray.direction, hit_voxel.normal);
+                mut_ray.inv_direction = 1.0 / mut_ray.direction;
+            }
+        }
+        else if dot(mut_ray.direction, scene.sun_direction.xyz) > 0.99 { // specular highlight
+            return spec_light + scene.sun_strength.xyz * info.color_mul + info.color_add;
+        }
+        else { // reflect sky color
+            return spec_light + (skybox_color(mut_ray.direction) * info.color_mul + info.color_add) * multiplier;
+        }
+    }
+    return spec_light; // this should never be reachable
 }
-fn diffuse_ray(ray_pos: vec3<f32>, vox: Voxel, rng: i32, diff_light: vec3<f32>) -> vec3<f32> {
+
+// cast a diffuse ray from vox at ray_pos, accumulating color in diff_light
+fn diffuse_ray(ray_pos: vec3<f32>, vox: Voxel, rng: u32, diff_light: vec3<f32>) -> vec3<f32> {
+    let diffuse_bounce_limit = 6; // TODO: move to a uniform
+   
+    var rng = rng;
+   
+    var new_color: vec3<f32> = vec3(1.0);
+    var last_pos: vec3<f32> = ray_pos;
+    var last_dir: vec3<f32>;
+    var hit_normal = vox.normal;
+    var hit_mat: Material;
+    var mut_ray: Ray;
+    var info: StepResult;
+    mut_ray.position = ray_pos;
+    for (var i: i32 = 0; i < diffuse_bounce_limit; i++) {
+        if i > 0 { // sometimes reflect ray on later bounces
+            if rand(&rng) < hit_mat.specular {
+                mut_ray.direction = normalize(reflect(last_dir, hit_normal) * hit_mat.shininess + rand_unit_sphere(&rng)); 
+            }
+        } else {
+            //TODO: randomize after first sample
+            mut_ray.direction = normalize(hit_normal);
+        }
+        mut_ray.inv_direction = 1.0 / mut_ray.direction;
+        info = step_scene(mut_ray, true);
+        hit_normal = info.voxel.normal;
+        hit_mat = scene.materials[info.voxel.material];
+        if info.hit {
+            mut_ray.position = info.new_ray.position;
+            let dist = abs(floor(last_pos * f32(CHUNK_SIZE)) - floor(info.new_ray.position * f32(CHUNK_SIZE)));
+            if dot(dist, dist) <= 1.0 { // hit adjacent voxel, meaning it's occluded
+                return diff_light;
+            } 
+            if hit_mat.emissive != 0u {
+                return diff_light + new_color * (info.voxel.albedo * info.color_mul + info.color_add);
+            }
+            else {
+                new_color *= (info.voxel.albedo * info.color_mul + info.color_add);
+            }
+        }
+        else {
+            return diff_light + new_color * max(dot(mut_ray.direction, scene.sun_direction.xyz), 0.0) * scene.sun_strength.xyz * info.color_mul + info.color_add;
+        }
+        last_dir = mut_ray.direction;
+    }
     return diff_light;
 }
-fn shadow_ray(ray_pos: vec3<f32>, rng: i32, diff_light: vec3<f32>) -> vec3<f32> {
+
+// cast a ray toward the sun, adding the sun's light if the ray doesn't hit the world
+fn shadow_ray(ray_pos: vec3<f32>, rng: u32, diff_light: vec3<f32>) -> vec3<f32> {
+    var sun_ray: Ray;
+    sun_ray.position = ray_pos;
+    sun_ray.direction = scene.sun_direction.xyz + EPSILON;
+    // TODO: if first_sample randomize the direction a bit
+    sun_ray.inv_direction = 1.0 / sun_ray.direction;    
+
+    let info = step_scene(sun_ray, true);
+    if !info.hit {
+        return diff_light + scene.sun_strength.xyz * info.color_mul + info.color_add;
+    }
+
     return diff_light;
+}
+
+// Random number functions taken from Sebastian Lague's raytracing video
+// random float in [0..1]
+fn rand(seed: ptr<function,u32>) -> f32 {
+    return f32(next_random_number(seed)) / 4294967295.0; // 2^32 - 1
+}
+
+fn rand_unit_sphere(seed: ptr<function, u32>) -> vec3<f32> {
+    let x = rand_normal_dist(seed);
+    let y = rand_normal_dist(seed);
+    let z = rand_normal_dist(seed);
+
+    return normalize(vec3(x, y, z));
+}
+
+fn rand_normal_dist(seed: ptr<function, u32>) -> f32 {
+    let theta = 2.0 * 3.1415926 * rand(seed);
+    let rho = sqrt(-2.0 * log(rand(seed)));
+    return rho * cos(theta);
+}
+
+fn next_random_number(seed: ptr<function,u32>) -> u32 {
+    *seed = *seed * 747796405u + 2891336453u;
+    var result: u32 = ((*seed >> ((*seed >> 28u) + 4u)) ^ *seed) * 277803737u;
+    result = (result >> 22u) ^ result;
+    return result;
 }

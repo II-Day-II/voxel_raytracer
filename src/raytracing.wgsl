@@ -206,7 +206,7 @@ fn step_chunk(chunk_ray: Ray, chunk_id: i32, partial_result: StepResult) -> Step
                 return result;
             }
             else if last_vox_id != vox_id {
-                result.color_add += result.color_mul * material.opacity * vox.albedo; // * sun_strength;
+                result.color_add += result.color_mul * material.opacity * vox.albedo * scene.sun_strength.xyz;
                 result.color_mul *= 1.0 - material.opacity;
                 //TODO: refraction
                 last_vox_id = vox_id;
@@ -332,14 +332,16 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 @compute @workgroup_size(8, 8, 8)
 fn lighting_main(@builtin(workgroup_id) wg_id: vec3<u32>, @builtin(local_invocation_id) invoc_id: vec3<u32>) {
 
-    let num_diffuse_samples = 15;
+    let num_diffuse_samples = 1;
 
     let scene_pos = vec3<i32>(wg_id);
     let pos_in_chunk = vec3<i32>(invoc_id);
-    if !in_chunk_bounds(pos_in_chunk) || !in_scene_bounds(scene_pos) {
+    let scene_idx = get_scene_index(scene_pos);
+    let chunk_idx = get_chunk_index(pos_in_chunk);
+    if !in_chunk_bounds(pos_in_chunk) || !in_scene_bounds(scene_pos) || scene.chunk_map[chunk_idx].pos.w == 0.0 { // don't bother with lighting for empty or oob chunks
         return;
     }
-    let compressed = compressed_voxel_at(get_scene_index(scene_pos), pos_in_chunk);
+    let compressed = compressed_voxel_at(scene_idx, pos_in_chunk);
     let this_voxel = decompress_voxel(compressed);
     let this_material = scene.materials[this_voxel.material];
     // start the ray at the center of the voxel
@@ -402,19 +404,15 @@ fn lighting_main(@builtin(workgroup_id) wg_id: vec3<u32>, @builtin(local_invocat
     let store_diffuse = vec3<u32>(round(diff_light * 65535.0));
     let diffuse_low_bytes = store_diffuse & vec3(0xFFu);
     let diffuse_high_bytes = (store_diffuse >> vec3(8u)) & vec3(0xFFu);
-    // let idx = get_chunk_index(pos_in_chunk);
-    // let chunk = &scene.chunk_map[chunk_id]; // have to take a reference to index array with non-const
-    // return (*chunk).voxels[idx]; 
-    let scene_idx = get_scene_index(scene_pos);
-    let chunk_idx = get_chunk_index(pos_in_chunk);
     scene.chunk_map[scene_idx].voxels[chunk_idx].albedo = compress_uvec4(vec4(vec3<u32>(round(this_voxel.albedo * 255.0)), u32(round(spec_light.x * 255.0))));
+    // scene.chunk_map[scene_idx].voxels[chunk_idx].albedo = compress_uvec4(vec4(vec3(255u,0u,0u), u32(round(spec_light.x * 255.0))));
     scene.chunk_map[scene_idx].voxels[chunk_idx].spec_light = compress_uvec4(vec4(vec2<u32>(round(spec_light.yz * 255.0)), diffuse_high_bytes.x, diffuse_low_bytes.x));
     scene.chunk_map[scene_idx].voxels[chunk_idx].diff_light = compress_uvec4(vec4(diffuse_high_bytes.y, diffuse_low_bytes.y, diffuse_high_bytes.z, diffuse_low_bytes.z));
 }
 
 // cast a specular ray from vox at scene_pos, accumulating color in spec_light, which is returned
 fn specular_ray(scene_pos: vec3<i32>, ray: Ray, vox: Voxel, spec_light: vec3<f32>) -> vec3<f32> {
-    let spec_bounce_limit = 6; // should maybe come from CPU
+    let spec_bounce_limit = 2; // should maybe come from CPU
     
     var spec_light: vec3<f32> = spec_light;
 

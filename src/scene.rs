@@ -105,7 +105,7 @@ impl Scene {
         let chunks =  (0..SCENE_SIZE*SCENE_SIZE*SCENE_SIZE).map(|i| Chunk::empty(i)).collect::<Vec<_>>();
         Self {
             size: Vec4::from_array([SCENE_SIZE as f32;4]),
-            sun_direction: Vec4::new(-0.5, 1.0, -0.5, 0.0),
+            sun_direction: Vec4::new(-0.408248, 0.816497, -0.408248, 0.0), // vec3(-0.5,1.0,-0.5).normalize().extend(0.0);
             sun_strength: Vec4::new(0.6, 0.6, 0.6, 0.0),
             ambient_light: Vec4::new(0.01, 0.01, 0.01, 0.0),
             time: 0,
@@ -122,6 +122,22 @@ impl Scene {
     }
     pub fn time(&self) -> u32 {
         self.time
+    }
+    pub fn spawn_ground_plane(&mut self) {
+        for chunk_x in 0..self.size.x as u32 {
+            for chunk_z in 0..self.size.z as u32 {
+                let chunk = self.chunk_at(uvec3(chunk_x, 0, chunk_z));
+                for x in 0..CHUNK_SIZE as u32 {
+                    for z in 0..CHUNK_SIZE as u32 {
+                        chunk.modify_voxel_at(uvec3(x, 0, z), |vox| {
+                            vox.albedo = uvec3(128, 128, 110);
+                            vox.material = 0;
+                            vox.normal = Vec3::Y;
+                        });
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -144,7 +160,11 @@ impl Chunk {
                 for x in 0..CHUNK_SIZE as u32 {
                     let pos = uvec3(x, y, z);
                     if (x == 0 || x == CHUNK_SIZE as u32 - 1) || (y == 0 || y == CHUNK_SIZE as u32 - 1) || (z == 0 || z == CHUNK_SIZE as u32 - 1) {
-                        let normal = (pos.as_vec3() - Vec3::ONE * CHUNK_SIZE as f32 / 2.0).normalize();
+                        let normal = vec3(
+                            if x == 0 {-1.0} else if x == CHUNK_SIZE as u32 - 1 {1.0} else {0.0},
+                            if y == 0 {-1.0} else if y == CHUNK_SIZE as u32 - 1 {1.0} else {0.0},
+                            if z == 0 {-1.0} else if z == CHUNK_SIZE as u32 - 1 {1.0} else {0.0},
+                        ).normalize();
                         self.modify_voxel_at(pos, |vox| {
                             vox.material = material;
                             vox.albedo = albedo;

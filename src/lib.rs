@@ -37,6 +37,7 @@ struct State {
     screen_render_pipeline: wgpu::RenderPipeline,
     screen_render_bind_group: wgpu::BindGroup,
     raytrace_compute_pipeline: wgpu::ComputePipeline,
+    lighting_compute_pipeline: wgpu::ComputePipeline,
     raytrace_bind_group: wgpu::BindGroup,
     
     srgb_format: wgpu::TextureFormat,
@@ -84,16 +85,18 @@ impl State {
             },
         ).await.unwrap();
         
+        let mut limits = if cfg!(target_arch = "wasm32") {
+            wgpu::Limits::downlevel_webgl2_defaults()
+        } else {
+            wgpu::Limits::default()
+        };
+        limits.max_compute_invocations_per_workgroup = 512; // TODO: remove the need for this by refactoring lighting shader
         let (device, queue) = adapter.request_device(
             &wgpu::DeviceDescriptor {
                 features: wgpu::Features::empty(),
                 // WebGL doesn't support all of wgpu's features, so if
                 // we're building for the web we'll have to disable some.
-                limits: if cfg!(target_arch = "wasm32") {
-                    wgpu::Limits::downlevel_webgl2_defaults()
-                } else {
-                    wgpu::Limits::default()
-                },
+                limits,
                 label: None,
             },
             None,
@@ -256,16 +259,21 @@ impl State {
             ], // add the world and camera here
             push_constant_ranges: &[]
         });
-        let raytrace_compute_pipeline = {
-            let shader = include_wgsl!("raytracing.wgsl");
-            let module = device.create_shader_module(shader);
-            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        let raytrace_shader = include_wgsl!("raytracing.wgsl");
+        let raytrace_module = device.create_shader_module(raytrace_shader);
+        let raytrace_compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some("Raytracing compute pipeline"),
                 layout: Some(&compute_pipeline_layout),
-                module: &module,
+                module: &raytrace_module,
                 entry_point: "main",
             }
-        )};
+        );
+        let lighting_compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("Lighting compute pipeline"),
+            layout: Some(&compute_pipeline_layout),
+            module: &raytrace_module,
+            entry_point: "lighting_main",
+        });
         
 
         // DEPTH BUFFER --------
@@ -289,6 +297,7 @@ impl State {
             screen_render_pipeline,
             screen_render_bind_group,
             raytrace_compute_pipeline,
+            lighting_compute_pipeline,
             raytrace_bind_group,
             
             srgb_format,
@@ -385,6 +394,15 @@ impl State {
             label: Some("Main Encoder"),
         });
 
+        {
+            let mut lighting_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {label: Some("Lighting pass")});
+            lighting_pass.set_pipeline(&self.lighting_compute_pipeline);
+            lighting_pass.set_bind_group(0, &self.raytrace_bind_group, &[]); // TODO: remove this, it's unused
+            lighting_pass.set_bind_group(1, &self.camera_bind_group, &[]);
+            lighting_pass.set_bind_group(2, &self.scene_bind_group, &[]);
+            // One workgroup per chunk 
+            lighting_pass.dispatch_workgroups(8, 8, 8);
+        }
         {
             let mut compute_pass = encoder.begin_compute_pass(
                 &wgpu::ComputePassDescriptor { label: Some("Compute pass") }

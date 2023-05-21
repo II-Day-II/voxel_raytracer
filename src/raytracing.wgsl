@@ -61,6 +61,7 @@ fn decompress_voxel(in: CompressedVoxel) -> Voxel {
     return out;
 }
 struct Chunk {
+    accumulated_light_samples: u32,
     pos: vec4<f32>, // the chunk's position in the scene (x, y, z) and if chunk contains data (w = 0.0 if chunk is empty)
     voxels: array<CompressedVoxel, 512>,// don't want to hardcode the size like this ;_;
 }
@@ -146,7 +147,7 @@ fn step_DDA(state: ptr<function, DDA>) -> vec3<f32> {
 
 struct StepResult {
     hit: bool, // if this is false, the rest of the data is invalid
-    new_ray: Ray, // updated information about a ray after stepping 
+    new_pos: vec3<f32>, // where the ray hit after stepping 
     normal: vec3<f32>, // the face normal of the hit voxel
     voxel: Voxel,
     color_add: vec3<f32>,
@@ -156,6 +157,8 @@ struct StepResult {
 }
 
 fn step_scene(ray: Ray, ignore_first: bool) -> StepResult {
+    var ignore_first: bool = ignore_first;
+
     var result: StepResult;
     result.hit = false;
     result.color_add = vec3(0.0);
@@ -170,14 +173,15 @@ fn step_scene(ray: Ray, ignore_first: bool) -> StepResult {
             var chunk_ray: Ray = dda.ray; // ray to use for traversing in the chunk
             let updated_ray_pos = dda.ray.position + dda.ray.direction * (min(min(last_side_dist.x, last_side_dist.y), last_side_dist.z) - EPSILON); // move to the chunk bounds
             chunk_ray.position = clamp((updated_ray_pos - vec3<f32>(dda.pos)) * vec3(f32(CHUNK_SIZE)), vec3(EPSILON), vec3(f32(CHUNK_SIZE)) - EPSILON); // set position relative to chunk bounds
-            result = step_chunk(chunk_ray, chunk_id, result);
+            result = step_chunk(chunk_ray, chunk_id, ignore_first, result);
             if result.hit {
-                result.new_ray.position = vec3<f32>(dda.pos) + result.new_ray.position / f32(CHUNK_SIZE); // hit position in scene space
+                result.new_pos = vec3<f32>(dda.pos) + result.new_pos / f32(CHUNK_SIZE); // hit position in scene space
                 return result;
             }
         }
         last_side_dist = dda.side_dist;
         normal = step_DDA(&dda);
+        ignore_first = false;
     }
     return result;
 }
@@ -185,7 +189,8 @@ fn step_scene(ray: Ray, ignore_first: bool) -> StepResult {
 var<private> last_vox_id: u32 = 255u; // the last hit voxel's albedo and material, used for transparency
 var<private> last_vox_refract: f32 = 1.0; // last hit voxel's refraction index, used for TODO: refraction
 
-fn step_chunk(chunk_ray: Ray, chunk_id: i32, partial_result: StepResult) -> StepResult {
+fn step_chunk(chunk_ray: Ray, chunk_id: i32, ignore_first: bool, partial_result: StepResult) -> StepResult {
+    var ignore_first: bool = ignore_first;
     var result: StepResult = partial_result;
     result.hit = false;
     var last_side_dist = vec3(0.0);
@@ -194,12 +199,12 @@ fn step_chunk(chunk_ray: Ray, chunk_id: i32, partial_result: StepResult) -> Step
     while in_chunk_bounds(dda.pos) {
         let compressed = compressed_voxel_at(chunk_id, dda.pos);
         let vox_id = (compressed.albedo & 0xFFFFFF00u) | (compressed.normal >> 24u);
-        let vox = decompress_voxel(compressed); 
-        if vox.material != 255u { // would be a constant for MATERIAL_EMPTY instead of 255
+        if (vox_id & 0xFFu) != 255u && !ignore_first { // would be a constant for MATERIAL_EMPTY instead of 255
+            let vox = decompress_voxel(compressed); 
             let material = scene.materials[vox.material];
             if material.opacity >= 1.0 {
                 result.hit = true;
-                result.new_ray.position = vec3<f32>(dda.pos) + dda.ray.direction * (min(min(last_side_dist.x, last_side_dist.y), last_side_dist.z) - EPSILON);
+                result.new_pos = vec3<f32>(dda.pos) + dda.ray.direction * (min(min(last_side_dist.x, last_side_dist.y), last_side_dist.z) - EPSILON);
                 result.normal = normal;
                 result.voxel = vox;
                 result.debug = compressed.albedo & 0xFFu;//vec2(get_chunk_index(dda.pos), chunk_id);
@@ -220,6 +225,7 @@ fn step_chunk(chunk_ray: Ray, chunk_id: i32, partial_result: StepResult) -> Step
         }
         last_side_dist = dda.side_dist;
         normal = step_DDA(&dda);
+        ignore_first = false;
     }
     return result;
 }
@@ -264,7 +270,7 @@ fn box_normal(intersect_pos: vec3<f32>, box_min: vec3<f32>, box_max: vec3<f32>) 
 }
 
 fn skybox_color(direction: vec3<f32>) -> vec3<f32> {
-    return textureSampleLevel(skybox_t, skybox_s, direction, 0.0).xyz;
+    return textureSampleLevel(skybox_t, skybox_s, direction, 0.0).xyz * scene.sun_strength.xyz;
 }
 fn voxel_color(info: StepResult) -> vec3<f32> {
     let vox = info.voxel;
@@ -279,7 +285,7 @@ fn voxel_color(info: StepResult) -> vec3<f32> {
     // return solid_color * sin(f32(scene.time / 10)) * info.color_mul + info.color_add; // visualize time
     // return abs(info.normal); // face normal
     // return abs(vox.normal); // per-voxel normal
-    // return vec3<f32>(info.new_ray.position) / f32(CHUNK_SIZE); // voxel position in chunk
+    // return vec3<f32>(info.new_pos) / f32(CHUNK_SIZE); // voxel position in chunk
     // return vox.albedo; // albedo
 }
 
@@ -313,7 +319,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         
         let final_info = step_scene(ray, false);
         if final_info.hit {
-            //let dist = distance(ray_pos, final_info.new_ray.position) / (scene.size.x * 4.0);
+            //let dist = distance(ray_pos, final_info.new_pos) / (scene.size.x * 4.0);
             //out_color = vec3(1.0-dist);
             out_color = voxel_color(final_info);
         } else {
@@ -338,8 +344,12 @@ fn lighting_main(@builtin(workgroup_id) wg_id: vec3<u32>, @builtin(local_invocat
     let pos_in_chunk = vec3<i32>(invoc_id);
     let scene_idx = get_scene_index(scene_pos);
     let chunk_idx = get_chunk_index(pos_in_chunk);
-    if !in_chunk_bounds(pos_in_chunk) || !in_scene_bounds(scene_pos) || scene.chunk_map[chunk_idx].pos.w == 0.0 { // don't bother with lighting for empty or oob chunks
+    if !in_chunk_bounds(pos_in_chunk) || !in_scene_bounds(scene_pos) || scene.chunk_map[scene_idx].pos.w == 0.0 { // don't bother with lighting for empty or oob chunks
         return;
+    }
+    let accumulated_samples = f32(min(scene.chunk_map[scene_idx].accumulated_light_samples, 1000u));
+    if accumulated_samples == 0.0 {
+        first_sample = true;
     }
     let compressed = compressed_voxel_at(scene_idx, pos_in_chunk);
     let this_voxel = decompress_voxel(compressed);
@@ -347,7 +357,7 @@ fn lighting_main(@builtin(workgroup_id) wg_id: vec3<u32>, @builtin(local_invocat
     // start the ray at the center of the voxel
     let inv_chunk_size = vec3(1.0/f32(CHUNK_SIZE)); 
     let half_inv_chunk_size = inv_chunk_size / 2.0;
-    let ray_pos: vec3<f32> = vec3<f32>(pos_in_chunk) * inv_chunk_size // the number of eights of a chunk away from the chunk origin corner
+    var ray_pos: vec3<f32> = vec3<f32>(pos_in_chunk) * inv_chunk_size // the number of eights of a chunk away from the chunk origin corner
         + vec3<f32>(scene_pos) // the chunk origin corner
         + half_inv_chunk_size  // to the middle of the voxel
         + (half_inv_chunk_size - vec3(EPSILON)) * this_voxel.normal; // bias slightly on the normal of the vector
@@ -395,20 +405,27 @@ fn lighting_main(@builtin(workgroup_id) wg_id: vec3<u32>, @builtin(local_invocat
             diff_light = diffuse_ray(ray_pos, this_voxel, scene.time * (u32(i) + 1u), diff_light);
             diff_light = shadow_ray(ray_pos, scene.time * (u32(i) + 2u), diff_light);
         }
-        diff_light = (diff_light + this_voxel.diffuse) / f32(num_diffuse_samples);
+        diff_light = (diff_light + this_voxel.diffuse * accumulated_samples) / (accumulated_samples + f32(num_diffuse_samples));
     }
     // as this will be assumed to be in the range 0-1 when compressing and decompressing:
     spec_light = clamp(spec_light, vec3(0.0), vec3(1.0));
     diff_light = clamp(diff_light, vec3(0.0), vec3(1.0));
 
-    let store_diffuse = vec3<u32>(round(diff_light * 65535.0));
+    let store_diffuse = vec3<u32>(round(diff_light * 65535.0)); // stored as 16-bit x, y, z
     let diffuse_low_bytes = store_diffuse & vec3(0xFFu);
     let diffuse_high_bytes = (store_diffuse >> vec3(8u)) & vec3(0xFFu);
     scene.chunk_map[scene_idx].voxels[chunk_idx].albedo = compress_uvec4(vec4(vec3<u32>(round(this_voxel.albedo * 255.0)), u32(round(spec_light.x * 255.0))));
     // scene.chunk_map[scene_idx].voxels[chunk_idx].albedo = compress_uvec4(vec4(vec3(255u,0u,0u), u32(round(spec_light.x * 255.0))));
     scene.chunk_map[scene_idx].voxels[chunk_idx].spec_light = compress_uvec4(vec4(vec2<u32>(round(spec_light.yz * 255.0)), diffuse_high_bytes.x, diffuse_low_bytes.x));
     scene.chunk_map[scene_idx].voxels[chunk_idx].diff_light = compress_uvec4(vec4(diffuse_high_bytes.y, diffuse_low_bytes.y, diffuse_high_bytes.z, diffuse_low_bytes.z));
+
+    // accumulate light samples
+    if chunk_idx == 0 {
+        scene.chunk_map[scene_idx].accumulated_light_samples += 1u;
+    }
 }
+
+var<workgroup> first_sample: bool = false;
 
 // cast a specular ray from vox at scene_pos, accumulating color in spec_light, which is returned
 fn specular_ray(scene_pos: vec3<i32>, ray: Ray, vox: Voxel, spec_light: vec3<f32>) -> vec3<f32> {
@@ -420,9 +437,9 @@ fn specular_ray(scene_pos: vec3<i32>, ray: Ray, vox: Voxel, spec_light: vec3<f32
     var multiplier: vec3<f32> = vox.albedo; // accumulate color over the bounces
     var mut_ray: Ray = ray;
     for(var i: i32; i < spec_bounce_limit; i++) {
-        let info = step_scene(mut_ray, true); // TODO: take ignore_first into account
+        let info = step_scene(mut_ray, true); 
         if info.hit {
-            let dist = abs(floor(info.new_ray.position * f32(CHUNK_SIZE)) - floor(last_pos * f32(CHUNK_SIZE)));
+            let dist = abs(floor(info.new_pos * f32(CHUNK_SIZE)) - floor(last_pos * f32(CHUNK_SIZE)));
             if dot(dist, dist) <= 1.0 { // ray hit the voxel next to the one being lit, meaning it's occluded from here
                 return spec_light;
             }
@@ -439,14 +456,14 @@ fn specular_ray(scene_pos: vec3<i32>, ray: Ray, vox: Voxel, spec_light: vec3<f32
                 }
                 // bounce the ray
                 multiplier *= hit_voxel.albedo * info.color_mul * hit_material.specular;
-                last_pos = info.new_ray.position;
-                mut_ray.position = info.new_ray.position;
+                last_pos = info.new_pos;
+                mut_ray.position = info.new_pos;
                 mut_ray.direction = reflect(mut_ray.direction, hit_voxel.normal);
                 mut_ray.inv_direction = 1.0 / mut_ray.direction;
             }
         }
         else if dot(mut_ray.direction, scene.sun_direction.xyz) > 0.99 { // specular highlight
-            return spec_light + scene.sun_strength.xyz * info.color_mul + info.color_add;
+            return spec_light + (scene.sun_strength.xyz * info.color_mul + info.color_add);
         }
         else { // reflect sky color
             return spec_light + (skybox_color(mut_ray.direction) * info.color_mul + info.color_add) * multiplier;
@@ -474,17 +491,19 @@ fn diffuse_ray(ray_pos: vec3<f32>, vox: Voxel, rng: u32, diff_light: vec3<f32>) 
             if rand(&rng) < hit_mat.specular {
                 mut_ray.direction = normalize(reflect(last_dir, hit_normal) * hit_mat.shininess + rand_unit_sphere(&rng)); 
             }
+        } else if first_sample {
+            mut_ray.direction = normalize(hit_normal) + EPSILON;
         } else {
-            //TODO: randomize after first sample
-            mut_ray.direction = normalize(hit_normal);
+            // randomize after first sample, spherically
+            mut_ray.direction = normalize(hit_normal + rand_unit_sphere(&rng)) + EPSILON;
         }
         mut_ray.inv_direction = 1.0 / mut_ray.direction;
         info = step_scene(mut_ray, true);
         hit_normal = info.voxel.normal;
         hit_mat = scene.materials[info.voxel.material];
         if info.hit {
-            mut_ray.position = info.new_ray.position;
-            let dist = abs(floor(last_pos * f32(CHUNK_SIZE)) - floor(info.new_ray.position * f32(CHUNK_SIZE)));
+            mut_ray.position = info.new_pos;
+            let dist = abs(floor(last_pos * f32(CHUNK_SIZE)) - floor(info.new_pos * f32(CHUNK_SIZE)));
             if dot(dist, dist) <= 1.0 { // hit adjacent voxel, meaning it's occluded
                 return diff_light;
             } 
@@ -492,7 +511,7 @@ fn diffuse_ray(ray_pos: vec3<f32>, vox: Voxel, rng: u32, diff_light: vec3<f32>) 
                 return diff_light + new_color * (info.voxel.albedo * info.color_mul + info.color_add);
             }
             else {
-                new_color *= (info.voxel.albedo * info.color_mul + info.color_add);
+                new_color *= info.voxel.albedo * info.color_mul + info.color_add;
             }
         }
         else {
@@ -505,10 +524,15 @@ fn diffuse_ray(ray_pos: vec3<f32>, vox: Voxel, rng: u32, diff_light: vec3<f32>) 
 
 // cast a ray toward the sun, adding the sun's light if the ray doesn't hit the world
 fn shadow_ray(ray_pos: vec3<f32>, rng: u32, diff_light: vec3<f32>) -> vec3<f32> {
+    var rng: u32 = rng;
     var sun_ray: Ray;
     sun_ray.position = ray_pos;
-    sun_ray.direction = scene.sun_direction.xyz + EPSILON;
-    // TODO: if first_sample randomize the direction a bit
+    if first_sample {
+        sun_ray.direction = scene.sun_direction.xyz + EPSILON;
+    } else {
+        // TODO: if not first_sample randomize the direction a bit, for soft shadows
+        sun_ray.direction = normalize(scene.sun_direction.xyz * 10.0 + rand_unit_sphere(&rng));
+    }
     sun_ray.inv_direction = 1.0 / sun_ray.direction;    
 
     let info = step_scene(sun_ray, true);

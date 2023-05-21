@@ -1,8 +1,8 @@
-use glam::{Vec3, UVec3, ivec3, uvec3, vec3, Vec4, Vec4Swizzles};
+use glam::{Vec3, UVec3, ivec3, uvec3, vec3, Vec4, Vec4Swizzles, UVec4};
 
 pub const SCENE_SIZE: usize = 8; // scene is 8x8x8 chunks
 pub const CHUNK_SIZE: usize = 8; // chunks are 8x8x8 voxels
-const NUM_MATERIALS: usize = 4;
+const NUM_MATERIALS: usize = 5;
 const MATERIAL_EMPTY: u32 = 255;
 
 #[repr(C)]
@@ -102,6 +102,13 @@ impl Scene {
             opacity: 1.0,
             ..Default::default()
         };
+        materials[4] = Material {
+            emissive: false as u32,
+            specular: 1.0,
+            opacity: 1.0,
+            shininess: 10.0,
+            ..Default::default()
+        };
         let chunks =  (0..SCENE_SIZE*SCENE_SIZE*SCENE_SIZE).map(|i| Chunk::empty(i)).collect::<Vec<_>>();
         Self {
             size: Vec4::from_array([SCENE_SIZE as f32;4]),
@@ -139,17 +146,47 @@ impl Scene {
             }
         }
     }
+    pub fn spawn_far_walls(&mut self) {
+        for cy in 0..2 {
+            for cx in 0..self.size.x as u32 {
+                let chunk = self.chunk_at(uvec3(cx, cy, self.size.z as u32 - 1));
+                for x in 0..CHUNK_SIZE as u32 {
+                    for y in 0..CHUNK_SIZE as u32 {
+                        chunk.modify_voxel_at(uvec3(x, y, CHUNK_SIZE as u32 - 1), |vox| {
+                            vox.albedo = uvec3(180, 180, 180);
+                            vox.material = 4;
+                            vox.normal = Vec3::NEG_Z;
+                        });
+                    }
+                }
+            }
+            for cz in 0..self.size.z as u32 {
+                let chunk = self.chunk_at(uvec3(self.size.x as u32 - 1, cy, cz));
+                for z in 0..CHUNK_SIZE as u32 {
+                    for y in 0..CHUNK_SIZE as u32 {
+                        chunk.modify_voxel_at(uvec3(CHUNK_SIZE as u32 -1, y, z), |vox| {
+                            vox.albedo = uvec3(180, 180, 180);
+                            vox.material = 4;
+                            vox.normal = Vec3::NEG_X;
+                        });
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Chunk {
+    accumulated_light_samples: UVec4, // only the x component is used, the rest is padding
     pos: Vec4, // position of this chunk in scene space and whether or not it has visible voxels (w component)
     voxels: [CompressedVoxel;CHUNK_SIZE*CHUNK_SIZE*CHUNK_SIZE],
 }
 impl Chunk {
     pub fn empty(i: usize) -> Self {
         Self {
+            accumulated_light_samples: UVec4::ZERO,
             pos: expand_index(i, UVec3::ONE * SCENE_SIZE as u32).extend(0.0),
             voxels: [Voxel::default().compress();CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE],
         }

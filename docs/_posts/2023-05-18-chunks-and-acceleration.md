@@ -61,7 +61,7 @@ Of note here is that I'm still only putting objects in their own chunks, meaning
 By now, each voxel had a base color, or albedo, and a material with, as of yet, unused properties for emissiveness, opacity, 
 shininess, and so on. Since the end of the project is coming up (though I doubt I'll be done by the time I had hoped, that's tomorrow!), 
 I wanted to get to work on using them as soon as possible. The easiest one seemed to be opacity, or transparency, depending 
-on whether or not you're an optimist. Simply multiply a fraction of the transparent object's color with the color behind it. 
+on whether or not you're an optimist. Simply add a fraction of the transparent object's color to the color behind it. 
 My scene traversal algorithm carries over the information from the transparent object into the next voxel, and into the next 
 chunk if necessary, and then passes it up to the function that determines the final output color.  
 
@@ -70,7 +70,7 @@ In this picture, I'm not applying the transparent object's color to the normals 
 completely correct.
 
 ![Transparent cube and sphere behind each other]({{ site.baseurl }}/img/layered_transparency.jpg)
-But if I use the albedo colors of the voxels, and apply the correct colors, the transparent objects can even overlap 
+But if I use the albedo colors of the voxels, and apply the correct transparency colors, the transparent objects can even overlap 
 with each other!
 
 Next I would like to implement lighting, reflection, and maybe even refraction through transparent objects.

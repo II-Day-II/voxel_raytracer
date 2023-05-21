@@ -181,11 +181,18 @@ impl State {
         // WORLD -----------------
         let mut scene = scene::Scene::new();
         scene.spawn_ground_plane();
-        scene.chunk_at(uvec3(0,0,0)).fill_borders(0, uvec3(180, 180, 180));
-        scene.chunk_at(uvec3(0,1,0)).fill_sphere(0, uvec3(180, 180, 180));
-        scene.chunk_at(uvec3(1, 1, 1)).fill_borders(2, uvec3(255, 255, 84));
+        scene.spawn_far_walls();
+        scene.chunk_at(uvec3(0, 0, 0)).fill_sphere(0, uvec3(180, 180, 180));
+        scene.chunk_at(uvec3(1, 0, 1)).fill_sphere(1, uvec3(180, 180, 180));
+        scene.chunk_at(uvec3(2, 1, 1)).fill_borders(2, uvec3(255, 255, 84));
         scene.chunk_at(uvec3(2, 2, 2)).fill_sphere(2, uvec3(210, 115, 80));
-        scene.chunk_at(uvec3(3, 1, 3)).fill_sphere(3, uvec3(0, 190, 0));
+        scene.chunk_at(uvec3(5, 1, 3)).fill_sphere(3, uvec3(0, 190, 0));
+        scene.chunk_at(uvec3(6, 0, 6)).fill_sphere(1, uvec3(0, 250, 40));
+        scene.chunk_at(uvec3(4, 0, 6)).fill_sphere(1, uvec3(240, 0, 40));
+        scene.chunk_at(uvec3(1, 0, 6)).fill_sphere(1, uvec3(240, 40, 0));
+        scene.chunk_at(uvec3(6, 0, 1)).fill_sphere(1, uvec3(0, 40, 250));
+        scene.chunk_at(uvec3(5, 0, 4)).fill_sphere(2, uvec3(10, 40, 50));
+        scene.chunk_at(uvec3(4, 0, 3)).fill_borders(1, uvec3(110, 140, 150));
         let scene_buffer = device.create_buffer_init(
             &wgpu::util::BufferInitDescriptor {
                 label: Some("scene buffer"),

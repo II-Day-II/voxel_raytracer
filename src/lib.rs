@@ -17,14 +17,6 @@ mod scene;
 mod resources;
 
 
-#[repr(C)]
-#[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct LightUniform {
-    position: [f32; 3],
-    _padding: u32, // struct size needs to be a power of 2 for uniforms, separating individual vec3s
-    color: [f32; 3],
-    _padding2: u32,
-}
 
 struct State {
     surface: wgpu::Surface,
@@ -62,7 +54,7 @@ impl State {
     // Creating some of the wgpu types requires async code
     async fn new(window: Window) -> Self {
 
-        // SURFACE, ADAPTER, QUEUE ---- HARDWARE STUFF
+        // SURFACE, ADAPTER, QUEUE ---- HARDWARE STUFF (from learn wgpu tutorial)
         let size = window.inner_size();
 
         // The instance is a handle to our GPU
@@ -265,7 +257,7 @@ impl State {
                 &raytrace_bind_group_layout,
                 &camera_bind_group_layout,
                 &scene_bind_group_layout,
-            ], // add the world and camera here
+            ],
             push_constant_ranges: &[]
         });
         let raytrace_shader = include_wgsl!("raytracing.wgsl");
@@ -325,11 +317,11 @@ impl State {
             scene,
         }
     }
-
+    // get a referece to the state's window
     pub fn window(&self) -> &Window {
         &self.window
     }
-
+    // resize the window
     fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
         if new_size.width > 0 && new_size.height > 0 {
             self.size = new_size;
@@ -343,9 +335,10 @@ impl State {
             self.raytrace_bind_group = create_raytrace_bind_group(&self.device, &self.screen_texture, self.srgb_format, &self.skybox).0;
         }
     }
-
+    // handle user input
     fn input(&mut self, event: &WindowEvent) -> bool {    
         match event {
+            // TODO: remove this interpolation stuff, it's unused
             WindowEvent::CursorMoved { position, .. } => {
                 let xt = position.x as f64 / self.size.width as f64;
                 let yt = position.y as f64 / self.size.height as f64;
@@ -387,7 +380,7 @@ impl State {
             _ => false,
         }
     }
-    
+    // update the state of the application with the time since the last frame
     fn update(&mut self, dt: instant::Duration) {
         self.camera.update(dt);
         self.queue.write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&self.camera.uniform()));
@@ -395,7 +388,7 @@ impl State {
         self.queue.write_buffer(&self.scene_buffer, 64, bytemuck::bytes_of(&self.scene.time()));
         self.window.set_title(&format!("Voxel Raytracing -- Frame time: {:05.2}ms", dt.as_secs_f32()*1000.0));
     }
-
+    // do all the rendering
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
         let output = self.surface.get_current_texture()?;
         let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -403,6 +396,7 @@ impl State {
             label: Some("Main Encoder"),
         });
 
+        // update lighting for this frame
         {
             let mut lighting_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {label: Some("Lighting pass")});
             lighting_pass.set_pipeline(&self.lighting_compute_pipeline);
@@ -410,8 +404,9 @@ impl State {
             lighting_pass.set_bind_group(1, &self.camera_bind_group, &[]);
             lighting_pass.set_bind_group(2, &self.scene_bind_group, &[]);
             // One workgroup per chunk 
-            lighting_pass.dispatch_workgroups(8, 8, 8);
+            lighting_pass.dispatch_workgroups(8, 8, 8); // 8x8x8 chunks
         }
+        // raytrace the scene to the render texture
         {
             let mut compute_pass = encoder.begin_compute_pass(
                 &wgpu::ComputePassDescriptor { label: Some("Compute pass") }
@@ -424,6 +419,7 @@ impl State {
             compute_pass.dispatch_workgroups(self.config.width / 15, self.config.height / 15, 1); // should use ceil_div by workgroup size instead of 15
         }
 
+        // show the render texture on the screen
         { // scope drops render pass at the end, so we can call encoder.finish()
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Render Pass"),
@@ -452,8 +448,8 @@ impl State {
 
         }
         
-        self.queue.submit([encoder.finish()]);
-        output.present();
+        self.queue.submit([encoder.finish()]); // tell the GPU to do all the things
+        output.present(); // present the final image to the screen
 
         Ok(())
     }
@@ -617,6 +613,7 @@ fn create_raytrace_bind_group(device: &wgpu::Device, screen_texture: &texture::T
 
 #[cfg_attr(target_arch="wasm32", wasm_bindgen(start))]
 pub async fn run() {
+    // if we're building for web, do web setup things (leftovers from learn wgpu tutorial)
     cfg_if::cfg_if!{
         if #[cfg(target_arch="wasm32")] {
             std::panic::set_hook(Box::new(console_error_panic_hook::hook));

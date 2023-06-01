@@ -6,6 +6,8 @@ use std::f32::consts::FRAC_PI_2;
 
 const SAFE_FRAC_PI_2: f32 = FRAC_PI_2 - 0.0001;
 
+// Taken from learn wgpu tutorial and modified to use the glam math library instead of cgmath.
+// Also CameraUniform uses separate inverse matrices instead of the precalculated view-projection matrix
 
 pub struct Camera {
     pub projection: Projection,

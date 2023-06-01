@@ -51,7 +51,6 @@ fn decompress_voxel(in: CompressedVoxel) -> Voxel {
     out.normal = vec3<f32>(vec3<i32>(nr.yzw * 2u) - 255) / 255.0; // [0..255] -> [-1..1]
     out.material = nr.x;
     out.albedo = vec3<f32>(ar.xyz) / 255.0; // [0..255] -> [0..1]
-    //TODO: send lighting data from cpu
     let diffuse_high = vec3(sr.z, dr.x, dr.z) << vec3(8u);
     let diffuse_low = vec3(sr.w, dr.y, dr.w);
     let diffuse = diffuse_high | diffuse_low;
@@ -530,7 +529,6 @@ fn shadow_ray(ray_pos: vec3<f32>, rng: u32, diff_light: vec3<f32>) -> vec3<f32> 
     if first_sample {
         sun_ray.direction = scene.sun_direction.xyz + EPSILON;
     } else {
-        // TODO: if not first_sample randomize the direction a bit, for soft shadows
         sun_ray.direction = normalize(scene.sun_direction.xyz * 10.0 + rand_unit_sphere(&rng));
     }
     sun_ray.inv_direction = 1.0 / sun_ray.direction;    

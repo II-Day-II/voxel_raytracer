@@ -4,6 +4,7 @@ use wgpu::util::DeviceExt;
 
 use crate::resources;
 
+// taken from learn wgpu tutorial.
 pub struct Texture {
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
@@ -149,8 +150,9 @@ impl Texture {
         );
         Self {texture, view, sampler}
     }
+    // create a cubemap texture, textureview and sampler to be used as a skybox
     pub async fn create_cubemap(device: &wgpu::Device, queue: &wgpu::Queue, box_path: &str) -> Self {
-         // TODO: actually fix the skybox. Don't load it for now, since it takes several seconds
+         // TODO: actually fix the skybox. it takes several seconds to load as it is.
         let names = ["right", "left", "top", "bottom", "front", "back"];
         let mut faces = Vec::with_capacity(6); 
         for name in names {
@@ -168,7 +170,7 @@ impl Texture {
         };
         let data = faces.iter().map(|img| img.as_bytes()).collect::<Vec<_>>().concat();
     
-        let dimensions = faces[0].dimensions();
+        let dimensions = faces[0].dimensions(); // assumed to be the same for all images
         let size = wgpu::Extent3d {
             width: dimensions.0,
             height: dimensions.1,
